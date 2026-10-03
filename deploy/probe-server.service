@@ -1,0 +1,51 @@
+[Unit]
+Description=probe server (接收上报 + 只读查询)
+Documentation=file:///opt/probe/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=probe
+Group=probe
+WorkingDirectory=/opt/probe
+
+# 身份在 /etc（只读、0600），数据在 /var/lib（可写）。
+ExecStart=/opt/probe/bin/server -config /etc/probe/nodes.yaml
+# 想把前端也交给它托管时，加上：-web /opt/probe/web
+# 不加也行——服务端只是个 HTTP 端点，静态文件交给反代或根本不用前端都可以。
+
+Restart=on-failure
+RestartSec=3
+
+# 加机器不用重启：改完 /etc/probe/nodes.yaml 后 systemctl reload probe-server
+ExecReload=/bin/kill -HUP $MAINPID
+
+# --- 加固 ---
+# 这些项只收紧权限、不改变功能，正常情况下不会导致启动失败。
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+
+# 只有数据目录可写；配置目录只读。
+ReadWritePaths=/var/lib/probe
+ReadOnlyPaths=/etc/probe
+
+# --- 下面两项收紧得更狠，也更容易在特殊环境里出问题 ---
+# 若启动失败，先看 journalctl -u probe-server，把这两行注释掉再试。
+# Go 不做 JIT，禁用可写可执行内存是安全的。
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

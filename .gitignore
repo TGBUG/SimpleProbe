@@ -1,0 +1,22 @@
+# 构建产物
+/bin/
+*.exe
+
+# 本地验证留下的东西
+/.e2e/
+/.demo/
+*.db
+*.db-wal
+*.db-shm
+
+# Go 构建缓存（Makefile 默认把它们指向上层目录；万一落进仓库也别提交）
+/.gocache/
+/.gopath/
+/.gotmp/
+
+# ---- 配置：下面这些里面有明文 token，绝不进 Git ----
+# 注意锚定在仓库根目录，所以 deploy/*.example.yaml 不会被误伤。
+/nodes.yaml
+/agent.yaml
+/agent-*.yaml
+*.bak.*

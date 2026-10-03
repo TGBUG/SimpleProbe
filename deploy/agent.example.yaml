@@ -1,0 +1,29 @@
+# agent 端配置。放在每台被监控机的 /etc/probe/agent.yaml，权限 0600。
+#
+# interval 只写在这一处：server 端不再重复配置，频率随载荷自描述
+# （这样两处配置就不会漂移，而在线率的分母直接依赖它）。
+
+# server 的地址。可以是：
+#   - 反向代理后的 HTTPS 域名：https://probe.example.com
+#   - 反代直接转发的内网地址：http://10.0.0.5:8080
+#   - 完全不用代理时的直连地址：http://203.0.113.7:8080
+# 服务端不关心前面有没有代理，它只是个 HTTP 端点。
+#
+# 注意：token 是明文随请求头发送的，所以 http:// 只适合内网或隧道；
+# 走公网请用 https://（由反代终止 TLS，服务端本身不需要证书）。
+server: "https://probe.example.com"
+
+# 必须与 server 端 nodes.yaml 里的 id 完全一致。
+node: "web01"
+
+# 与 server 端配置里那个节点的 token 一致。
+token: "把 add-node.sh 生成的十六进制串填这里"
+
+# 上报间隔。合法范围 5s ~ 1h，默认 30s。
+# 调大能省资源，调小会让明细表增长更快（30s × 30 天 = 86,400 行/节点）。
+interval: 30s
+
+# 要监控的挂载点，留空则只报根分区。
+# 刻意不自动枚举 /proc/mounts——那里会有 tmpfs / overlay / squashfs
+# 等一堆没意义的条目。
+mounts: ["/"]

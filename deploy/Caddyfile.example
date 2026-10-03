@@ -1,0 +1,14 @@
+# 反向代理示例（Caddy）。与 nginx.conf.example 等价，任选其一，也可以都不用。
+#
+# Caddy 会自动申请并续期证书，配置文件因此只有四行。
+
+probe.example.com {
+	# 前端静态文件（此时 server 不用加 -web）
+	root * /opt/probe/web
+	file_server
+
+	# API 转给后端
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+}

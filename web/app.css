@@ -1,0 +1,250 @@
+/*
+ * 主题契约：全部视觉参数都在下面这一个 :root 里。
+ *
+ * 换皮 = 写一个只含 :root 的 CSS 文件在你的部署里覆盖它（放在 app.css 之后），
+ * 组件结构一行都不用动。需要覆盖的变量就是这些，没有藏在别处的硬编码颜色。
+ *
+ * 三组语义：
+ *   --bg/--card/--fg/--muted/--border  骨架与文字
+ *   --ok/--warn/--bad                  状态（在线/接近阈值/超阈值）
+ *   --accent/--accent-2/--accent-3     曲线与强调（顺序即负载 1/5/15 分钟）
+ */
+:root {
+  --bg: #0f1115;
+  --card: #171a21;
+  --card-hover: #1c2029;
+  --fg: #e6e8ee;
+  --muted: #8b93a7;
+  --border: #242833;
+
+  --ok: #3ba55d;
+  --warn: #d9a441;
+  --bad: #e0483e;
+
+  --accent: #4a7dff;
+  --accent-2: #a35bd6;
+  --accent-3: #2fb8a6;
+
+  --radius: 12px;
+  --gap: 16px;
+  --font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --focus: var(--accent);
+}
+
+* { box-sizing: border-box; }
+
+/* 键盘操作时给个明确的焦点圈；鼠标点击不显示。 */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 尊重系统的“减少动态效果”。 */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+body {
+  margin: 0;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--font);
+}
+
+a { color: var(--accent); }
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+#meta, .meta { color: var(--muted); font-size: 12px; }
+
+#banner {
+  display: none;
+  margin-bottom: var(--gap);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: rgba(224, 72, 62, .12);
+  border: 1px solid var(--bad);
+}
+#banner.show { display: block; }
+
+/* ---------- 列表页 ---------- */
+
+#nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--gap);
+}
+
+.card {
+  display: block;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  color: inherit;
+  text-decoration: none;
+  transition: background .15s ease, border-color .15s ease;
+}
+a.card:hover { background: var(--card-hover); border-color: var(--accent); }
+.card.static { cursor: default; }
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.dot.online { background: var(--ok); box-shadow: 0 0 0 3px rgba(59, 165, 93, .18); }
+.dot.offline { background: var(--bad); box-shadow: 0 0 0 3px rgba(224, 72, 62, .18); }
+
+.name { font-weight: 600; }
+.id { color: var(--muted); font-size: 12px; margin-left: auto; font-family: var(--mono); }
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13px;
+}
+.row .k { color: var(--muted); flex: none; }
+.row .v { font-family: var(--mono); text-align: right; }
+
+.bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 3px 0 9px;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width .3s ease;
+}
+.bar > i.warn { background: var(--warn); }
+.bar > i.bad { background: var(--bad); }
+
+.foot {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.rates span { margin-right: 10px; white-space: nowrap; }
+.never { color: var(--muted); padding: 8px 0; }
+
+/* ---------- 详情页 ---------- */
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.detail-head h2 { font-size: 16px; margin: 0; }
+
+.ranges { display: flex; gap: 6px; margin-left: auto; }
+.range-btn {
+  background: var(--card);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.range-btn:hover { color: var(--fg); border-color: var(--accent); }
+.range-btn.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--card));
+}
+
+.chart-block {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 8px;
+  margin-bottom: var(--gap);
+}
+.chart-title {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+.chart-title .legend { display: flex; gap: 12px; font-family: var(--mono); font-size: 12px; }
+.chart-title .legend i {
+  display: inline-block; width: 9px; height: 2px;
+  vertical-align: middle; margin-right: 5px;
+}
+.swatch-cpu { background: var(--accent); }
+.swatch-mem { background: var(--accent-2); }
+.swatch-load1 { background: var(--accent); }
+.swatch-load5 { background: var(--accent-2); }
+.swatch-load15 { background: var(--accent-3); }
+
+.chart svg { display: block; width: 100%; height: 180px; }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .axis-label { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.chart .line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.chart .line-cpu { stroke: var(--accent); }
+.chart .line-mem { stroke: var(--accent-2); }
+.chart .line-load1 { stroke: var(--accent); }
+.chart .line-load5 { stroke: var(--accent-2); }
+.chart .line-load15 { stroke: var(--accent-3); }
+.chart .empty { color: var(--muted); padding: 40px 0; text-align: center; font-size: 13px; }
+
+/* 曲线对应的最小/平均/最大，直接写在标题右边。 */
+.chart-stat { color: var(--fg); font-family: var(--mono); font-size: 12px; }
+
+/* ---------- 概览条 ---------- */
+
+.summary {
+  display: flex;
+  gap: 28px;
+  margin-bottom: var(--gap);
+  padding: 14px 18px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+.summary .stat { display: flex; align-items: baseline; gap: 7px; }
+.summary .stat b { font-size: 20px; font-weight: 600; font-family: var(--mono); }
+.summary .stat span { color: var(--muted); font-size: 12px; }
+.summary .stat.ok b { color: var(--ok); }
+.summary .stat.bad b { color: var(--bad); }
+.summary .stat.never b { color: var(--muted); }
+
+/* 离线节点的卡片压暗一点：扫一眼就知道哪些不对劲。 */
+.card.offline { opacity: .72; }
+.card.offline:hover { opacity: 1; }

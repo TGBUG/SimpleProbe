@@ -1,0 +1,46 @@
+[Unit]
+Description=probe agent (只读采集本机指标并上报)
+Documentation=file:///opt/probe/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 非 root。agent 只读 /proc 与调用 statvfs，普通用户即可。
+User=probe-agent
+Group=probe-agent
+WorkingDirectory=/opt/probe
+
+ExecStart=/opt/probe/bin/agent -config /etc/probe/agent.yaml
+
+# 纯出站：不需要开任何入站端口，因此也不需要任何 CapabilityBoundingSet 放行。
+Restart=always
+RestartSec=5
+
+# --- 加固 ---
+# agent 全程只需读取，所以整盘只读是安全的（ProtectSystem=strict 会把
+# / 与 /usr 挂成只读，只有 /dev /proc /sys 例外）。
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# --- 下面两项收紧得更狠，也更容易在特殊环境里出问题 ---
+# 若启动失败，先看 journalctl -u probe-agent，把这两行注释掉再试。
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

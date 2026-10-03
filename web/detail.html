@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>节点详情</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>节点详情</h1>
+  <div id="meta"></div>
+</header>
+<div id="banner"></div>
+
+<div class="detail-head">
+  <a href="index.html">← 返回</a>
+  <h2 id="title">…</h2>
+  <div class="ranges" id="ranges"></div>
+</div>
+
+<div class="chart-block">
+  <div class="chart-title">CPU 使用率<span class="chart-stat" id="stat-cpu"></span><span class="legend"><span><i class="swatch-cpu"></i>cpu_pct</span></span></div>
+  <div class="chart" id="chart-cpu"></div>
+</div>
+
+<div class="chart-block">
+  <div class="chart-title">内存占用<span class="chart-stat" id="stat-mem"></span><span class="legend"><span><i class="swatch-mem"></i>mem_pct</span></span></div>
+  <div class="chart" id="chart-mem"></div>
+</div>
+
+<div class="chart-block">
+  <div class="chart-title">系统负载<span class="legend">
+    <span><i class="swatch-load1"></i>1 分钟</span>
+    <span><i class="swatch-load5"></i>5 分钟</span>
+    <span><i class="swatch-load15"></i>15 分钟</span>
+  </span></div>
+  <div class="chart" id="chart-load"></div>
+</div>
+
+<script src="app.js"></script>
+<script>
+"use strict";
+
+const RANGES = [
+  { key: "1h", secs: 3600 },
+  { key: "6h", secs: 6 * 3600 },
+  { key: "24h", secs: 24 * 3600 },
+  { key: "7d", secs: 7 * 86400 },
+  { key: "30d", secs: 30 * 86400 },
+];
+
+const nodeId = Probe.param("node");
+let currentRange = "24h";
+
+document.getElementById("title").textContent = nodeId || "（未指定节点）";
+
+/* ---------- 图表 ---------- */
+
+function fmtAxis(v) {
+  const a = Math.abs(v);
+  if (a >= 100) return v.toFixed(0);
+  if (a >= 10) return v.toFixed(1);
+  return v.toFixed(2);
+}
+
+function fmtTime(ts, span) {
+  const d = new Date(ts * 1000);
+  const p = function (n) { return String(n).padStart(2, "0"); };
+  if (span <= 24 * 3600) return p(d.getHours()) + ":" + p(d.getMinutes());
+  return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
+/*
+ * 一条曲线的点会在数据中断处断开，而不是连成一条直线——
+ * “没有数据”和“值一直是这个数”在图上必须看得出来。
+ */
+function renderChart(host, seriesList, step, from, to) {
+  const all = seriesList.reduce(function (acc, s) { return acc.concat(s.points); }, []);
+  if (!all.length) {
+    host.innerHTML = '<div class="empty">该时间段没有数据</div>';
+    return;
+  }
+
+  const W = Math.max(320, Math.round(host.clientWidth || 900));
+  const H = 180, PL = 48, PR = 12, PT = 10, PB = 22;
+  const iw = W - PL - PR, ih = H - PT - PB;
+
+  let yMin = Infinity, yMax = -Infinity;
+  all.forEach(function (p) {
+    if (p[1] < yMin) yMin = p[1];
+    if (p[1] > yMax) yMax = p[1];
+  });
+  if (yMin === yMax) { yMax = yMin + 1; }
+  const pad = (yMax - yMin) * 0.12;
+  yMin = Math.max(0, yMin - pad);
+  yMax = yMax + pad;
+
+  const span = Math.max(1, to - from);
+  const X = function (ts) { return PL + ((ts - from) / span) * iw; };
+  const Y = function (v) { return PT + ih - ((v - yMin) / (yMax - yMin)) * ih; };
+
+  let svg = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = yMin + (yMax - yMin) * (i / 4);
+    const yy = Y(v).toFixed(1);
+    svg += '<line class="grid" x1="' + PL + '" y1="' + yy + '" x2="' + (W - PR) + '" y2="' + yy + '"/>';
+    svg += '<text class="axis-label" x="' + (PL - 6) + '" y="' + (Number(yy) + 3) + '" text-anchor="end">' + fmtAxis(v) + "</text>";
+  }
+  for (let i = 0; i <= 3; i++) {
+    const t = from + (span * i) / 3;
+    const anchor = i === 0 ? "start" : (i === 3 ? "end" : "middle");
+    svg += '<text class="axis-label" x="' + X(t).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="' + anchor + '">' + fmtTime(t, span) + "</text>";
+  }
+
+  const gapLimit = step * 2.5;
+  seriesList.forEach(function (s) {
+    let d = "", prev = null;
+    s.points.forEach(function (p) {
+      const ts = p[0], v = p[1];
+      const startNew = prev === null || ts - prev > gapLimit;
+      d += (startNew ? "M" : "L") + X(ts).toFixed(1) + " " + Y(v).toFixed(1) + " ";
+      prev = ts;
+    });
+    if (d) svg += '<path class="line line-' + s.key + '" d="' + d.trim() + '"/>';
+  });
+
+  host.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '">' + svg + "</svg>";
+}
+
+/* ---------- 数据 ---------- */
+
+const METRICS = [
+  { metric: "cpu_pct", key: "cpu", host: "chart-cpu" },
+  { metric: "mem_pct", key: "mem", host: "chart-mem" },
+  { metric: "load1", key: "load1", host: "chart-load" },
+  { metric: "load5", key: "load5", host: "chart-load" },
+  { metric: "load15", key: "load15", host: "chart-load" },
+];
+
+let lastPayload = null;
+
+async function load() {
+  if (!nodeId) {
+    Probe.showBanner("URL 里缺少 node 参数。");
+    return;
+  }
+
+  const range = RANGES.filter(function (r) { return r.key === currentRange; })[0];
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - range.secs;
+
+  try {
+    const results = await Promise.all(METRICS.map(function (m) {
+      return Probe.getJSON("/api/v1/series?node=" + encodeURIComponent(nodeId) +
+        "&metric=" + m.metric + "&from=" + from + "&to=" + to);
+    }));
+
+    const byHost = {};
+    METRICS.forEach(function (m, i) {
+      const resp = results[i];
+      byHost[m.host] = byHost[m.host] || { series: [], step: resp.step, from: resp.from, to: resp.to };
+      byHost[m.host].series.push({
+        key: m.key,
+        points: (resp.points || []).map(function (p) { return [Number(p[0]), Number(p[1])]; }),
+      });
+    });
+
+    lastPayload = byHost;
+
+    Object.keys(byHost).forEach(function (host) {
+      const g = byHost[host];
+      renderChart(document.getElementById(host), g.series, g.step, g.from, g.to);
+    });
+
+    const cpu = results[0];
+    const total = cpu.points.length;
+    document.getElementById("stat-cpu").textContent = statText(byHost["chart-cpu"].series[0].points, "%");
+    document.getElementById("stat-mem").textContent = statText(byHost["chart-mem"].series[0].points, "%");
+    document.getElementById("meta").textContent =
+      total + " 个数据点 · 每个点 " + fmtStep(cpu.step) + " · " +
+      new Date(cpu.from * 1000).toLocaleString() + " 起";
+    Probe.hideBanner();
+  } catch (err) {
+    document.getElementById("stat-cpu").textContent = "";
+    document.getElementById("stat-mem").textContent = "";
+    Probe.showBanner("读取曲线失败：" + err.message);
+  }
+}
+
+function fmtStep(sec) {
+  if (sec % 86400 === 0) return (sec / 86400) + " 天";
+  if (sec % 3600 === 0) return (sec / 3600) + " 小时";
+  if (sec % 60 === 0) return (sec / 60) + " 分钟";
+  return sec + " 秒";
+}
+
+// 把一段区间的极值与均值写在图题右边——曲线看趋势，数字看具体。
+function statText(points, suffix) {
+  if (!points || !points.length) return "";
+  let min = Infinity, max = -Infinity, sum = 0;
+  points.forEach(function (p) {
+    const v = p[1];
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  });
+  return "最小 " + fmtAxis(min) + suffix + " · 平均 " + fmtAxis(sum / points.length) + suffix +
+    " · 最大 " + fmtAxis(max) + suffix;
+}
+
+function renderRanges() {
+  const host = document.getElementById("ranges");
+  host.innerHTML = RANGES.map(function (r) {
+    return '<button class="range-btn' + (r.key === currentRange ? " active" : "") +
+      '" data-range="' + r.key + '">' + r.key + "</button>";
+  }).join("");
+  host.querySelectorAll("button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      currentRange = b.dataset.range;
+      renderRanges();
+      load();
+    });
+  });
+}
+
+// 宽度变化后重画：SVG 的 viewBox 是按容器实测宽度算的，
+// 不重画的话文字会被非等比拉伸。
+let resizeTimer = null;
+window.addEventListener("resize", function () {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function () {
+    if (!lastPayload) return;
+    Object.keys(lastPayload).forEach(function (host) {
+      const g = lastPayload[host];
+      renderChart(document.getElementById(host), g.series, g.step, g.from, g.to);
+    });
+  }, 150);
+});
+
+renderRanges();
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

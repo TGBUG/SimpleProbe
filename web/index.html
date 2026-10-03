@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>节点状态</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>节点状态</h1>
+  <div id="meta"></div>
+</header>
+<div id="banner"></div>
+<div class="summary" id="summary"></div>
+<main id="nodes"></main>
+
+<script src="app.js"></script>
+<script>
+"use strict";
+
+const el = {
+  nodes: document.getElementById("nodes"),
+  summary: document.getElementById("summary"),
+  meta: document.getElementById("meta"),
+};
+
+function stat(cls, value, label) {
+  return '<div class="stat ' + cls + '"><b>' + value + "</b><span>" + label + "</span></div>";
+}
+
+function renderCard(n) {
+  const status = n.online ? "在线" : (n.metrics ? "离线" : "从未上线");
+  const dot = '<span class="dot ' + (n.online ? "online" : "offline") + '" title="' + status + '"></span>';
+  const head =
+    '<div class="head">' + dot +
+    '<span class="name">' + Probe.escapeHtml(n.name) + "</span>" +
+    '<span class="id">' + Probe.escapeHtml(n.id) + "</span>" +
+    "</div>";
+
+  let body;
+  if (!n.metrics) {
+    body = '<div class="never">尚未收到任何上报。agent 装好了吗？</div>';
+  } else {
+    const m = n.metrics;
+    const memPct = Probe.pct(m.mem.used, m.mem.total);
+    const disks = (m.disk || []).map(function (d) {
+      const p = Probe.pct(d.used, d.total);
+      return Probe.row(Probe.escapeHtml(d.mount),
+        Probe.formatBytes(d.used) + " / " + Probe.formatBytes(d.total) + " · " + p.toFixed(0) + "%") + Probe.bar(p);
+    }).join("");
+
+    body =
+      Probe.row("负载", m.load.map(function (x) { return x.toFixed(2); }).join(" / ")) +
+      Probe.row("CPU", m.cpu_pct.toFixed(1) + "%") + Probe.bar(m.cpu_pct) +
+      Probe.row("内存", Probe.formatBytes(m.mem.used) + " / " + Probe.formatBytes(m.mem.total) + " · " + memPct.toFixed(0) + "%") +
+      Probe.bar(memPct) + disks;
+  }
+
+  const r = n.uptime || {};
+  const foot =
+    '<div class="foot"><span class="rates">' +
+    "<span>24h " + Probe.formatRate(r["24h"]) + "</span>" +
+    "<span>7d " + Probe.formatRate(r["7d"]) + "</span>" +
+    "<span>30d " + Probe.formatRate(r["30d"]) + "</span>" +
+    "</span><span>" + (n.metrics ? "运行 " + Probe.formatUptime(n.metrics.uptime_s) : status) + "</span></div>";
+
+  // 离线/从未上线的卡片压暗，扫一眼就知道哪些不对劲。
+  const state = n.online ? "" : " offline";
+
+  // 从未上报过的节点没有曲线可看，就不做成链接了。
+  if (!n.metrics) {
+    return '<div class="card static' + state + '">' + head + body + foot + "</div>";
+  }
+  return '<a class="card' + state + '" href="detail.html?node=' + encodeURIComponent(n.id) + '">' + head + body + foot + "</a>";
+}
+
+async function refresh() {
+  try {
+    const data = await Probe.getJSON("/api/v1/nodes");
+    const nodes = data.nodes || [];
+
+    el.nodes.innerHTML = nodes.length
+      ? nodes.map(renderCard).join("")
+      : '<div class="never">配置里还没有任何节点。</div>';
+
+    const online = nodes.filter(function (n) { return n.online; }).length;
+    const never = nodes.filter(function (n) { return !n.metrics; }).length;
+    const offline = nodes.length - online - never;
+
+    el.summary.innerHTML =
+      stat("ok", online, "在线") +
+      stat("bad", offline, "离线") +
+      stat("never", never, "从未上线") +
+      '<div class="stat"><b>' + nodes.length + "</b><span>节点总数</span></div>";
+
+    el.meta.textContent = "更新于 " + new Date(data.generated_at * 1000).toLocaleTimeString();
+    Probe.hideBanner();
+  } catch (err) {
+    el.summary.innerHTML = "";
+    Probe.showBanner("读取节点数据失败：" + err.message + "（将在 " + Probe.REFRESH_MS / 1000 + " 秒后重试）");
+  }
+}
+
+refresh();
+setInterval(refresh, Probe.REFRESH_MS);
+</script>
+</body>
+</html>
