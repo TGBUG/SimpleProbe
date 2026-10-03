@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 下面几步与本地 `make ci` 是同一套东西：
+      # 格式 → 静态检查 → 单测 → 前端语法 → 构建 → 端到端。
+      - name: gofmt
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: go test
+        run: make test
+
+      - name: 前端语法
+        run: make web-check
+
+      - name: 构建
+        run: make build
+
+      - name: 端到端
+        run: make e2e
