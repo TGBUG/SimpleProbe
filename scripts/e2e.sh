@@ -24,7 +24,11 @@ done
 SERVER_PID=""
 AGENT_PID=""
 AGENT2=""
+INST_SRV=""
+INST_AG=""
 cleanup() {
+  [[ -n "$INST_AG" ]] && kill "$INST_AG" 2>/dev/null || true
+  [[ -n "$INST_SRV" ]] && kill "$INST_SRV" 2>/dev/null || true
   [[ -n "$AGENT2" ]] && kill "$AGENT2" 2>/dev/null || true
   [[ -n "$AGENT_PID" ]] && kill "$AGENT_PID" 2>/dev/null || true
   [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true
@@ -249,6 +253,67 @@ for path in / /detail.html?node=local /app.css /app.js; do
   curl -fsS -o /dev/null -w "  GET $path => HTTP %{http_code}\n" "http://127.0.0.1:$PORT$path"
 done
 curl -fsS -o /dev/null -w "  GET /api/v1/health => HTTP %{http_code}\n" "http://127.0.0.1:$PORT/api/v1/health"
+
+echo "== 一键安装：用 release 包装进临时前缀并跑起来 =="
+# 安装脚本现在是主要的部署路径，它坏了就什么都装不上，所以纳入验收。
+# 用 --no-systemd + 自定义前缀把它限制在临时目录里，不碰宿主系统。
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+  x86_64) HOST_ARCH=amd64 ;;
+  aarch64 | arm64) HOST_ARCH=arm64 ;;
+  armv7l) HOST_ARCH=armv7 ;;
+esac
+
+PLATFORMS="$HOST_ARCH" DIST="$WORK/dist" VERSION=e2e \
+  "$ROOT/scripts/build-release.sh" >"$WORK/release.log" 2>&1 ||
+  { echo "  构建 release 失败，见 $WORK/release.log"; exit 1; }
+echo "  构建出 $(find "$WORK/dist" -name '*.tar.gz' | wc -l) 个包"
+
+INST_PORT=$((PORT + 1))
+INST="$WORK/inst"
+"$ROOT/scripts/install.sh" server --node inst \
+  --listen "127.0.0.1:$INST_PORT" --db "$INST/probe.db" \
+  --prefix "$INST/probe" --conf-dir "$INST/etc" \
+  --version e2e --from-dir "$WORK/dist" --no-systemd >"$WORK/install-server.log" 2>&1 ||
+  { echo "  安装 server 失败："; tail -20 "$WORK/install-server.log"; exit 1; }
+echo "  server 装好"
+
+INST_TOKEN="$(awk '/token:/{gsub(/[" ]/,"",$2);print $2;exit}' "$INST/etc/nodes.yaml")"
+"$ROOT/scripts/install.sh" agent \
+  --server "http://127.0.0.1:$INST_PORT" --node inst --token "$INST_TOKEN" --interval 5s \
+  --prefix "$INST/probe-a" --conf-dir "$INST/etc-a" \
+  --version e2e --from-dir "$WORK/dist" --no-systemd >"$WORK/install-agent.log" 2>&1 ||
+  { echo "  安装 agent 失败："; tail -20 "$WORK/install-agent.log"; exit 1; }
+echo "  agent 装好"
+
+"$INST/probe/bin/server" -config "$INST/etc/nodes.yaml" -web "$INST/probe/web" \
+  >"$WORK/inst-server.log" 2>&1 &
+INST_SRV=$!
+sleep 2
+"$INST/probe-a/bin/agent" -config "$INST/etc-a/agent.yaml" >"$WORK/inst-agent.log" 2>&1 &
+INST_AG=$!
+sleep 12
+
+curl -fsS "http://127.0.0.1:$INST_PORT/api/v1/nodes" -o "$WORK/inst-nodes.json"
+python3 - "$WORK/inst-nodes.json" "$INST_PORT" <<'PY'
+import json, sys, urllib.request
+
+d = json.load(open(sys.argv[1]))
+n = [x for x in d["nodes"] if x["id"] == "inst"][0]
+print("  装出来的 agent online:", n["online"], " metrics:", "有" if n["metrics"] else "无")
+assert n["online"] is True, "用 release 包装出来的 agent 应该能上报"
+assert n["metrics"] is not None
+
+# server 包里的前端也一并验一下（-web 指向的是安装目录里的副本）。
+code = urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[2]}/").status
+print("  装出来的面板 GET / =>", code)
+assert code == 200
+PY
+
+kill "$INST_AG" "$INST_SRV" 2>/dev/null || true
+wait "$INST_AG" "$INST_SRV" 2>/dev/null || true
+INST_AG=""
+INST_SRV=""
 
 echo
 echo "全部通过 ✅"

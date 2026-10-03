@@ -56,8 +56,10 @@ TLS 由谁终止是部署方的事，服务端代码里没有证书逻辑。
 | `web/index.html` | 列表页（概览条 + 每节点一张卡片） |
 | `web/detail.html` | 详情页（自写 SVG 折线，零依赖） |
 | `deploy/` | systemd 单元、两份配置模板、两份**可选**的反代示例 |
+| `scripts/install.sh` | **一键安装 / 升级**：下载 release 包 → 校验 SHA256 → 装二进制与单元 → 启动 |
 | `scripts/add-node.sh` | 加节点：生成 token → 改配置 → `-check` 校验（失败自动回滚）→ 产出 agent 配置 |
-| `scripts/e2e.sh` | 端到端验证 |
+| `scripts/build-release.sh` | 交叉编译 + 打包 + 校验和（本地与 release 工作流共用） |
+| `scripts/e2e.sh` | 端到端验证（含"用 release 包装一遍再跑起来"） |
 | `scripts/check-web.sh` | 把 HTML 里的内联脚本抽出来交给 `node --check` |
 | `docs/DESIGN.md` | 设计规格（含每个决策的理由与踩过的坑） |
 
@@ -119,17 +121,83 @@ systemctl reload probe-server        # 等价于 kill -HUP <pid>，不用重启
 
 ## 部署
 
-见 `deploy/`。要装的东西只有三样：一个二进制、一份配置、一个 systemd 单元。
+发布物是静态二进制（agent ≈ 3 MB，server ≈ 5 MB，压缩后），
+支持 `linux/amd64`、`linux/arm64`、`linux/armv7`，不依赖 glibc、不需要装运行时。
+
+### 一键安装
 
 ```bash
-install -d -m 0755 /opt/probe/bin /etc/probe /var/lib/probe
-install -m 0755 server /opt/probe/bin/server
-install -m 0600 nodes.yaml /etc/probe/nodes.yaml
-useradd --system --no-create-home --shell /usr/sbin/nologin probe
-chown probe:probe /var/lib/probe
-install -m 0644 probe-server.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now probe-server
+# server
+curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh \
+  | sudo bash -s -- server --node web01
+
+# agent（装在每台被监控机上；命令由上面的 server 安装打印出来）
+curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh \
+  | sudo bash -s -- agent --server https://probe.example.com --node web01 --token <token>
 ```
+
+脚本只做五件事：解析参数 → 下载 release 包 → **校验 SHA256（不匹配就拒绝安装）**
+→ 装二进制与 systemd 单元 → 启动。重跑同一条命令就是升级，配置不会被覆盖
+（要覆盖加 `--force`）。
+
+管道执行等于把远端代码直接交给 shell。要更稳妥就先下来看一眼：
+
+```bash
+curl -fsSLO https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh
+less install.sh && sudo bash install.sh server --node web01
+```
+
+`--dry-run` 只打印计划；`--no-systemd` 只装文件（容器里用）；
+`--from-dir` 从本地目录取包（离线安装）。
+
+### 从源码装
+
+```bash
+make build                 # 产出 bin/server 与 bin/agent
+sudo install -m 0755 bin/server /opt/probe/bin/server
+sudo install -d -m 0755 /opt/probe/web && sudo cp web/* /opt/probe/web/
+sudo install -d -m 0755 /etc/probe
+sudo install -m 0644 nodes.yaml /etc/probe/nodes.yaml
+sudo install -m 0644 deploy/probe-server.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now probe-server
+```
+
+### 关于账户与配置权限
+
+**不需要创建任何账户。** 两个单元都用 `DynamicUser=yes`：systemd 启动时临时分配
+一个 uid，服务不是 root，但也不用 `useradd`。数据库目录由 `StateDirectory=probe`
+自动创建并交给那个 uid。
+
+之所以敢省掉账户，是因为 agent 与 server 之间只有「agent 单向上报」这一条链路，
+server 侧不存在任何向 agent 下发指令的代码路径——为只读进程单独建账户收益有限。
+**但非 root 这条保住了**：DynamicUser 的成本是零，那就没必要退回 root。
+
+代价是配置必须是 `0644`：服务跑在临时 uid 上，读不了 `0600` 的 root 文件；
+而 SIGHUP 热加载要求服务能直接读那个路径（`LoadCredential` 给的是启动时的快照，
+reload 会读到旧内容）。也就是说 **`nodes.yaml` / `agent.yaml` 里那个明文 token
+同机任何用户可读**——按前面的判断，它泄露的最坏后果是"可以伪造监控数据"。
+
+想收紧的话，把单元换成静态用户（`User=probe` + `useradd`），配置改回 `0600`：
+
+```ini
+# 替换 DynamicUser=yes 这两行
+User=probe
+Group=probe
+```
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin probe
+sudo chown probe:probe /etc/probe/nodes.yaml && sudo chmod 0600 /etc/probe/nodes.yaml
+```
+
+### 发布新版本
+
+```bash
+make release VERSION=v0.4.0        # 本地打包，产物在 dist/
+```
+
+在 GitHub 上：Actions → Release → Run workflow，填一个 `v*` 版本号；
+或者直接推一个 `v*` tag。工作流会交叉编译三个平台、生成 `SHA256SUMS`、
+把 6 个包和 `install.sh` 一起挂到 release 上。
 
 反代**不是必需品**，要用的话 `deploy/` 下有 nginx 与 Caddy 两份等价示例。
 
@@ -151,10 +219,12 @@ systemctl daemon-reload && systemctl enable --now probe-server
 - ✅ v0.1 agent 采集 → 上报 → 落库 → `/api/v1/nodes` → 列表页
 - ✅ v0.2 历史曲线 `/api/v1/series` + 详情页
 - ✅ v0.3 部署件 + 前端收口（概览条、区间极值、主题契约）
-- ⏳ v0.4 候选：离线 webhook 告警
+- ✅ v0.4 Release 工作流（三平台静态二进制 + SHA256SUMS）+ 一键安装脚本 + 去掉建账户步骤
+- ⏳ 候选：离线 webhook 告警
 
 `make e2e` 覆盖的验收：真实 `/proc` 数据落库、停掉 agent 后在线率确实下降、
-非法上报被拒、曲线分桶正确、**改配置 + SIGHUP + 装 agent 后新节点上线**。
+非法上报被拒、曲线分桶正确、改配置 + SIGHUP 后新节点上线，
+以及**用 release 包装进临时前缀再跑起来**（安装脚本坏了就什么都装不上）。
 
 ## License
 

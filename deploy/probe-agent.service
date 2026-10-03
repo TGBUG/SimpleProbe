@@ -1,26 +1,30 @@
 [Unit]
-Description=probe agent (只读采集本机指标并上报)
-Documentation=file:///opt/probe/README.md
+Description=SimpleProbe agent (只读采集本机指标并上报)
+Documentation=https://github.com/TGBUG/SimpleProbe
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 
-# 非 root。agent 只读 /proc 与调用 statvfs，普通用户即可。
-User=probe-agent
-Group=probe-agent
+# ---- 运行身份：不创建任何账户 ----
+#
+# agent 只做两件事：读 /proc 与 statvfs，然后单向 POST 出去。它不接受任何
+# 入站连接，server 也无法让它执行任何东西。所以单独建账户意义有限；
+# DynamicUser 让 systemd 临时分配一个 uid——省掉 useradd，同时仍不是 root。
+DynamicUser=yes
 WorkingDirectory=/opt/probe
 
+# agent.yaml 里是明文 token，默认 0644（见 README 的说明与更严的替代方案）。
 ExecStart=/opt/probe/bin/agent -config /etc/probe/agent.yaml
 
-# 纯出站：不需要开任何入站端口，因此也不需要任何 CapabilityBoundingSet 放行。
+# 纯出站：不需要开任何入站端口，也不需要任何 capability。
 Restart=always
 RestartSec=5
 
-# --- 加固 ---
-# agent 全程只需读取，所以整盘只读是安全的（ProtectSystem=strict 会把
-# / 与 /usr 挂成只读，只有 /dev /proc /sys 例外）。
+# ---- 加固 ----
+# agent 全程只需读取，所以整盘只读是安全的（ProtectSystem=strict 把 / 与
+# /usr 挂成只读，只有 /dev /proc /sys 例外——而 /proc 正是它要读的）。
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -36,7 +40,7 @@ RestrictRealtime=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# --- 下面两项收紧得更狠，也更容易在特殊环境里出问题 ---
+# ---- 下面两项收紧得更狠，也更容易在特殊环境里出问题 ----
 # 若启动失败，先看 journalctl -u probe-agent，把这两行注释掉再试。
 MemoryDenyWriteExecute=true
 SystemCallFilter=@system-service

@@ -33,6 +33,9 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "agent.yaml", "配置文件路径")
+	// 与 server 的 -check 对称：让安装脚本能用「组件自己的解析器」校验它
+	// 刚写下的配置，而不是靠再实现一遍规则。
+	check := flag.Bool("check", false, "只校验配置文件后退出（供安装脚本使用）")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -42,6 +45,11 @@ func run() error {
 		return err
 	}
 	interval := time.Duration(cfg.Interval)
+
+	if *check {
+		fmt.Printf("配置 OK：node=%s，server=%s，interval=%s\n", cfg.Node, cfg.Server, interval)
+		return nil
+	}
 
 	client, err := push.New(push.Options{
 		ServerURL: cfg.Server,

@@ -319,7 +319,8 @@ SimpleProbe/                  # module github.com/TGBUG/SimpleProbe
 | **v0.1** ✅ | agent 采集 → 上报 → server 存库 → `/nodes` → 一个丑但能用的页面 | ✅ **已完成**：`make e2e` 端到端通过（真实 `/proc` 数据落库、反向验证在线率确实下降、非法上报被拒） |
 | **v0.2** ✅ | 曲线 `/series` + 在线率三窗口（§4.2 计数法）+ 当前在线状态 | ✅ **已完成**：端到端反向验证通过（停 agent 后在线率 1.0→0.54）；新增 store 级验收测试 `TestOnlineRate_NinetySecondInterval` 证明 90 秒间隔、全程在线的节点在线率仍是 100%，同一测试里的反事实断言说明按分钟桶算会得到约 0.67 |
 | **v0.3** ✅ | 前端美化 + 主题变量 + 部署脚本（systemd/nodes.yaml 模板/add-node.sh） | ✅ **已完成**：`make e2e` 里新增验收段——`add-node.sh` 改配置 → `SIGHUP` → 起第二个 agent，节点上线；systemd 单元经 `systemd-analyze verify` 结构校验 |
-| **v0.4** | 可选：离线 webhook 告警 | 按需 |
+| **v0.4** ✅ | Release 工作流 + 一键安装脚本 + 免账户部署 | ✅ **已完成**：`make release` 交叉编译三平台静态二进制并产出 SHA256SUMS（本地与工作流共用同一份逻辑）；`install.sh` 下载→校验→安装→启动，且 `make e2e` 里新增「用 release 包装进临时前缀再跑起来」的验收段 |
+| v0.5 | 可选：离线 webhook 告警 | 按需 |
 
 **明确不做**：SSH/终端、文件管理、任务下发、DDNS、插件市场、任意 URL 探测（SSRF 源头）、WebSocket、多用户与登录、节点自注册。
 
@@ -401,5 +402,39 @@ make e2e     # 新增验收段：add-node.sh 改配置 → SIGHUP → 装 agent 
    留到真的需要复杂交互时再定。
 2. `nodes.yaml` 解析用 `KnownFields(true)`，与上报同一套「未知字段即拒绝」口径。
 
-**下一步候选**（尚未排期）：v0.4 离线 webhook 告警；或把前端换成 Vue3 + ECharts
+**v0.4 已完成**（2026-10-03）：发布链路与免账户部署。
+
+```
+make release VERSION=v0.4.0    # 交叉编译 amd64/arm64/armv7 + 打包 + SHA256SUMS
+make e2e                       # 新增验收段：用 release 包装进临时前缀再跑起来
+```
+
+三个决定值得记下来：
+
+1. **发布物是静态二进制**。`CGO_ENABLED=0` 能编出来，是因为 SQLite 用的是纯 Go
+   驱动（modernc.org/sqlite）；`ldd` 确认无动态依赖。agent ≈ 3 MB、server ≈ 5 MB
+   （压缩后），装到任何发行版上都不需要 glibc 或运行时。打包脚本里有一条
+   **静态性断言**与一条**本机架构烟测**（跑 `-check` 解析临时配置），发布物不会
+   悄悄退化成动态链接。
+2. **构建逻辑只有一处**。`make release` 与 release 工作流共用
+   `scripts/build-release.sh`；工作流只负责把 `dist/` 挂上去。这样"发布物怎么打
+   出来"不会出现本地与 CI 两套。
+3. **不创建账户，也不退回 root**。两个单元改用 `DynamicUser=yes`：
+   systemd 临时分配 uid，省掉 `useradd`，但服务仍不是 root。判断依据是
+   agent↔server 之间只有单向上报、server 侧不存在下发指令的代码路径，为只读
+   进程单独建账户收益有限；而 DynamicUser 的额外成本是零，所以没必要退回 root。
+   代价必须写清楚：服务跑在临时 uid 上读不了 `0600` 的 root 文件，而 SIGHUP
+   热加载又要求服务能直接读配置路径（`LoadCredential` 给的是启动快照，reload
+   会读到旧内容），因此**配置改为 `0644`**——同机任何用户可读那个明文 token。
+   README 里给了想要更严时的静态用户替代方案。
+
+**与原始规格的全部偏差**（累计）：
+1. 前端没有用 Vue3 + ECharts。v0.1~v0.4 用的是零依赖原生 JS + 自写 SVG 折线：
+   没有构建步骤、没有 node_modules。换皮靠 CSS 变量而非组件主题。要不要引入框架，
+   留到真的需要复杂交互时再定。
+2. `nodes.yaml` 解析用 `KnownFields(true)`，与上报同一套「未知字段即拒绝」口径。
+3. 配置权限从 `0600` 放宽到 `0644`（理由见上），换来的是不建账户 + SIGHUP 热加载
+   仍然有效。
+
+**下一步候选**（尚未排期）：v0.5 离线 webhook 告警；或把前端换成 Vue3 + ECharts
 （只有当交互复杂度真的需要时才值得）。

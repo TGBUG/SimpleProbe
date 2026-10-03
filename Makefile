@@ -18,7 +18,10 @@ export GOPATH
 export GOTMPDIR
 export GOPROXY
 
-.PHONY: all build test vet fmt fmt-check web-check e2e ci clean
+# 发布版本号：默认取 git describe，release 工作流会用 VERSION= 显式覆盖。
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+.PHONY: all build release test vet fmt fmt-check web-check e2e ci clean clean-dist
 
 all: fmt-check vet test build
 
@@ -27,6 +30,11 @@ build:
 	go build -o bin/server ./cmd/server
 	go build -o bin/agent ./cmd/agent
 	@ls -la bin
+
+# 交叉编译 + 打包 + 校验和。本地与 release 工作流共用这一份逻辑，
+# "发布物怎么打出来"只有一处定义。
+release:
+	VERSION=$(VERSION) ./scripts/build-release.sh
 
 test:
 	go test -cover ./...
@@ -57,3 +65,6 @@ ci: fmt-check vet test web-check build e2e
 
 clean:
 	rm -rf bin .e2e .demo
+
+clean-dist:
+	rm -rf dist

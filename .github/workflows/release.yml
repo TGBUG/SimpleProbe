@@ -1,0 +1,89 @@
+name: Release
+
+# "在需要时发一版"：手动触发（给一个 tag 名），或者推一个 v* tag。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号，同时作为 release 的 tag（例如 v0.4.0）。不存在就打在当前提交上。"
+        required: true
+        type: string
+      draft:
+        description: "创建为草稿（不公开）"
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+# 同一个 tag 不并发跑两遍（手动触发建出的 tag 会再触发一次 tag 事件）。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # git describe 需要 tag
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 决定版本号
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$v" =~ ^v[0-9] ]]; then
+            echo "版本号必须以 v 加数字开头，例如 v0.4.0：$v" >&2
+            exit 1
+          fi
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+          echo "将发布：$v"
+
+      - name: 构建发布物
+        run: make release VERSION="${{ steps.ver.outputs.version }}"
+
+      - name: 汇总产出
+        run: |
+          echo "== dist/ =="
+          ls -la dist/
+          echo
+          cat dist/SHA256SUMS
+
+      # 幂等：手动触发时 gh 会顺带创建 tag，而 tag 事件又会触发一次本工作流。
+      # 第二次进来时 release 已存在，改成覆盖上传而不是报错退出。
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "release $VERSION 已存在，改为覆盖上传资源"
+            gh release upload "$VERSION" dist/* --clobber
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes \
+              ${{ inputs.draft && '--draft' || '' }} \
+              dist/*
+          fi
+
+      - name: 结果
+        run: |
+          gh release view "${{ steps.ver.outputs.version }}" \
+            --json url,assets --jq '"\(.url)\n" + ([.assets[].name] | join("\n"))'

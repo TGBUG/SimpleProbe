@@ -7,6 +7,11 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# 打印给运维的那条一键安装命令要用到这两个。
+REPO="TGBUG/SimpleProbe"
+CONF_DIR="/etc/probe"
+
 BIN=""
 NODES=""
 ID=""
@@ -105,7 +110,7 @@ fi
 AGENT_FILE="$OUT_DIR/agent-$ID.yaml"
 umask 077
 cat >"$AGENT_FILE" <<EOF
-# 由 add-node.sh 生成。拷到目标机器的 /etc/probe/agent.yaml（权限 0600）。
+# 由 add-node.sh 生成。等价于 install.sh agent 写出来的那份，含明文 token。
 server: "$SERVER_URL"
 node: "$ID"
 token: "$TOKEN"
@@ -121,19 +126,14 @@ cat <<EOF
   server 端（本机）：
     systemctl reload probe-server        # 等价于 kill -HUP <pid>
 
-  agent 端（在 $ID 这台机器上执行）：
-    install -d -m 0755 /opt/probe/bin /etc/probe
-    install -m 0755 agent /opt/probe/bin/agent
-    install -m 0600 agent-$ID.yaml /etc/probe/agent.yaml
+  agent 端（在 $ID 这台机器上执行，一条命令搞定）：
+    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh \\
+      | bash -s -- agent --server "$SERVER_URL" --node "$ID" --token "$TOKEN"
 
-    useradd --system --no-create-home --shell /usr/sbin/nologin probe-agent 2>/dev/null || true
-    install -m 0644 probe-agent.service /etc/systemd/system/
-    systemctl daemon-reload
-    systemctl enable --now probe-agent
-    journalctl -u probe-agent -f
+  上面那条命令会自己下载、校验、装二进制与 systemd 单元并启动。
+  不想走网络的话，也可以把这份配置拷过去手装：
 
-  agent 配置文件（请拷走，里面含 token，不要提交到 Git）：
-    $AGENT_FILE
+    $AGENT_FILE              （拷到目标机的 $CONF_DIR/agent.yaml）
 
   原配置备份：
     $BACKUP
