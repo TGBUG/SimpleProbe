@@ -84,6 +84,10 @@ jobs:
           fi
 
       - name: 结果
+        env:
+          # 这一步只打印摘要，但 gh 一样需要凭据——漏了它整次运行会被标红，
+          # 让人误以为发布失败（发布其实已经成功了）。
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "${{ steps.ver.outputs.version }}" \
             --json url,assets --jq '"\(.url)\n" + ([.assets[].name] | join("\n"))'
