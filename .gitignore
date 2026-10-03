@@ -14,6 +14,9 @@
 /.gopath/
 /.gotmp/
 
+# 本机 Go 环境覆盖（模板是 local.mk.example，那个要提交）
+/local.mk
+
 # ---- 配置：下面这些里面有明文 token，绝不进 Git ----
 # 注意锚定在仓库根目录，所以 deploy/*.example.yaml 不会被误伤。
 /nodes.yaml

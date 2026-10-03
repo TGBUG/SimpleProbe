@@ -12,19 +12,24 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
       # 下面几步与本地 `make ci` 是同一套东西：
       # 格式 → 静态检查 → 单测 → 前端语法 → 构建 → 端到端。
+      #
+      # 注意：这里**不能**出现任何 GOCACHE / GOPATH / GOTMPDIR 覆盖。
+      # Go 只创建 GOCACHE，不创建 GOTMPDIR；一旦把本机沙箱的路径带进来，
+      # 第一步就会以 "creating work dir: ... no such file or directory" 失败。
+      # 需要覆盖的环境请写进仓库根目录的 local.mk（已 gitignore）。
       - name: gofmt
         run: make fmt-check
 

@@ -1,0 +1,19 @@
+# Go 环境覆盖（可选）。
+#
+# 默认什么都不设——CI 与普通开发机上，Go 自己挑的缓存位置就是对的。
+# 只有默认位置不可写的环境（例如受限沙箱）才需要复制本文件为 local.mk
+# 并打开下面的注释。local.mk 已被 .gitignore 忽略。
+#
+# 这里的教训值得留着：这些路径**曾经**被硬编码进 Makefile，写作
+# `$(CURDIR)/../.gotmp`。本地那个目录恰好存在所以一切正常，但 CI 上
+# `/home/runner/work/SimpleProbe/.gotmp` 不存在，而 Go **不会自动创建
+# GOTMPDIR**，于是 `go vet` 以 exit code 2 直接失败：
+#
+#     go: creating work dir: stat .../../.gotmp: no such file or directory
+#
+# 环境相关的绕行手段属于本机，不属于项目。放这里。
+
+# GOCACHE  := /workspace/.gocache
+# GOPATH    := /workspace/.gopath
+# GOTMPDIR  := /workspace/.gotmp
+# GOPROXY   := https://goproxy.cn,direct

@@ -1,9 +1,22 @@
-# 本机 Go 的构建缓存默认落在不可写的位置（/root/.cache 或 /go），
-# 所以这里统一指向工作区。要改路径用 make GOCACHE=... 覆盖。
-export GOCACHE  := $(CURDIR)/../.gocache
-export GOPATH   := $(CURDIR)/../.gopath
-export GOTMPDIR := $(CURDIR)/../.gotmp
-export GOPROXY  ?= https://goproxy.cn,direct
+# Go 环境覆盖（可选）：仓库根目录若有 local.mk 就会被包含进来。
+#
+# 默认不设置任何东西——CI 与普通开发机上 Go 自己的默认值就是对的。
+# 只有默认缓存位置不可写的环境才需要 local.mk，见 local.mk.example。
+#
+# 这里曾经把路径硬编码成 $(CURDIR)/../.gotmp，本地能用，CI 上因为那个目录
+# 不存在直接让 `go vet` 挂掉（Go 不会自动创建 GOTMPDIR）。环境相关的绕行
+# 手段属于本机，不属于项目。
+-include local.mk
+
+# 若外部指定了这些路径，顺手建出来——Go 只创建 GOCACHE，不创建 GOTMPDIR。
+ifneq ($(strip $(GOTMPDIR)),)
+$(shell mkdir -p "$(GOCACHE)" "$(GOPATH)" "$(GOTMPDIR)" 2>/dev/null)
+endif
+
+export GOCACHE
+export GOPATH
+export GOTMPDIR
+export GOPROXY
 
 .PHONY: all build test vet fmt fmt-check web-check e2e ci clean
 

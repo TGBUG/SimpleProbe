@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 端到端验证：起 server + agent，检查数据落库、在线判定与在线率的反向验证。
 #
-# 用法：scripts/e2e.sh
+# 用法：scripts/e2e.sh（推荐用 `make e2e`，它会把 local.mk 里的 Go 环境带进来）
 # 之所以把“停掉 agent 后在线率必须下降”也放进 v0.1，是因为它一次性验证了
 # 整条链路：agent 停止上报 → server 判定离线 → 分母裁剪正确 → 前端拿到数字。
 set -euo pipefail
@@ -13,13 +13,13 @@ PORT=${PORT:-18080}
 INTERVAL=${INTERVAL:-5s}
 TOKEN="e2e-token"
 
-# 本机 Go 构建缓存默认落在 /root/.cache 或 /go，可能不可写。
-# 刻意不用 ${GOPATH:-...}：那样会继承系统里那个不可写的值；改用独立的
-# PROBE_* 变量覆盖，默认一律指向工作区。
-export GOCACHE="${PROBE_GOCACHE:-$ROOT/../.gocache}"
-export GOPATH="${PROBE_GOPATH:-$ROOT/../.gopath}"
-export GOTMPDIR="${PROBE_GOTMPDIR:-$ROOT/../.gotmp}"
-export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
+# 这里刻意不设置 GOCACHE / GOPATH / GOTMPDIR：那属于调用方的环境。
+# 曾经硬编码成 "$ROOT/../.gotmp"，本地能用，CI 上因为目录不存在直接报
+# "go: creating work dir: ... no such file or directory"（Go 只创建
+# GOCACHE，不创建 GOTMPDIR）。外部若指定了它们，这里只负责把目录建出来。
+for d in "${GOCACHE:-}" "${GOPATH:-}" "${GOTMPDIR:-}"; do
+  [[ -n "$d" ]] && mkdir -p "$d"
+done
 
 SERVER_PID=""
 AGENT_PID=""
