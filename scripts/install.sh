@@ -132,6 +132,35 @@ case "$(uname -m)" in
   *) die "不支持的架构 $(uname -m)（目前提供 amd64 / arm64 / armv7）" ;;
 esac
 
+# ---- 取包工具 ----
+if command -v curl >/dev/null 2>&1; then
+  fetch_to() { curl -fsSL --retry 3 --connect-timeout 15 -o "$2" "$1"; }
+  fetch_stdout() { curl -fsSL --retry 3 --connect-timeout 15 "$1"; }
+elif command -v wget >/dev/null 2>&1; then
+  fetch_to() { wget -qO "$2" "$1"; }
+  fetch_stdout() { wget -qO- "$1"; }
+else
+  [[ -n "$FROM_DIR" ]] || die "需要 curl 或 wget"
+  fetch_to() { die "需要 curl 或 wget"; }
+  fetch_stdout() { die "需要 curl 或 wget"; }
+fi
+
+# ---- 解析 latest ----
+#
+# GitHub 的 /releases/latest/download/<file> 只在**文件名固定**时才有用；
+# 我们的包名里带版本号，所以必须先把真实的 tag 问出来，否则会去下载
+# simpleprobe-server_latest_linux_amd64.tar.gz 这种不存在的名字（404）。
+if [[ -z "$FROM_DIR" && "$VERSION" == "latest" ]]; then
+  log "查询最新版本…"
+  api_json="$(fetch_stdout "https://api.github.com/repos/$REPO/releases/latest")" ||
+    die "查询最新版本失败（可能被限流）。用 --version <tag> 显式指定即可绕开。"
+  VERSION="$(printf '%s' "$api_json" |
+    grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | cut -d'"' -f4)"
+  [[ -n "$VERSION" ]] ||
+    die "没能从 API 响应里解析出 tag_name。用 --version <tag> 显式指定即可绕开。"
+  log "最新版本是 $VERSION"
+fi
+
 ASSET="simpleprobe-${MODE}_${VERSION}_linux_${ARCH}.tar.gz"
 
 step "计划"
@@ -163,23 +192,12 @@ if [[ -n "$FROM_DIR" ]]; then
     log "  警告：$FROM_DIR 里没有 SHA256SUMS，跳过校验"
   fi
 else
-  if [[ "$VERSION" == "latest" ]]; then
-    BASE="https://github.com/$REPO/releases/latest/download"
-  else
-    BASE="https://github.com/$REPO/releases/download/$VERSION"
-  fi
-
-  if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL --retry 3 --connect-timeout 15 -o "$2" "$1"; }
-  elif command -v wget >/dev/null 2>&1; then
-    fetch() { wget -qO "$2" "$1"; }
-  else
-    die "需要 curl 或 wget"
-  fi
+  # VERSION 已在上面解析成真实 tag（latest 不是文件名的一部分）。
+  BASE="https://github.com/$REPO/releases/download/$VERSION"
 
   log "  下载 $ASSET"
-  fetch "$BASE/$ASSET" "$WORK/$ASSET" || die "下载失败：$BASE/$ASSET"
-  fetch "$BASE/SHA256SUMS" "$WORK/SHA256SUMS" || die "下载失败：$BASE/SHA256SUMS"
+  fetch_to "$BASE/$ASSET" "$WORK/$ASSET" || die "下载失败：$BASE/$ASSET"
+  fetch_to "$BASE/SHA256SUMS" "$WORK/SHA256SUMS" || die "下载失败：$BASE/SHA256SUMS"
 fi
 
 step "校验"
