@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -438,5 +439,24 @@ func TestLimiter_WindowResets(t *testing.T) {
 	// 不同 key 互不影响。
 	if !l.allow("b") || !l.allow("b") || l.allow("b") {
 		t.Error("key 之间不应互相影响")
+	}
+}
+
+// TestDocs_ListsEveryMetric 防的是文档漂移。
+//
+// 可查询的指标清单同时存在于代码白名单（store.metricSpecs）和 docs/API.md 里。
+// 白名单加了指标却忘了改文档，照着文档写前端的人就会永远漏掉它——而这类不一致
+// 没有任何编译器或运行期信号会提醒。
+func TestDocs_ListsEveryMetric(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "API.md"))
+	if err != nil {
+		t.Fatalf("读 docs/API.md 失败: %v", err)
+	}
+	text := string(doc)
+
+	for _, m := range store.Metrics() {
+		if !strings.Contains(text, "`"+m+"`") {
+			t.Errorf("docs/API.md 里没有指标 %q —— 白名单加了指标就要同步文档", m)
+		}
 	}
 }

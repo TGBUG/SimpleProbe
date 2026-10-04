@@ -56,6 +56,7 @@ server 里**不存在任何向 agent 下发指令的代码路径**。面板即�
 | `scripts/build-release.sh` | 交叉编译 + 打包 + 校验和（本地与 release 工作流共用） |
 | `scripts/e2e.sh` | 端到端验证（含"用 release 包装一遍再跑起来"） |
 | `scripts/check-web.sh` | 把 HTML 里的内联脚本抽出来交给 `node --check` |
+| `docs/API.md` | **接口契约**：字段语义、边界情况、前端要点 |
 | `docs/DESIGN.md` | 设计规格（含每个决策的理由与踩过的坑） |
 
 ## 接口
@@ -68,6 +69,9 @@ server 里**不存在任何向 agent 下发指令的代码路径**。面板即�
 | GET | `/api/v1/health` | 公开 | 自检 |
 
 可用指标：`cpu_pct`、`mem_pct`、`load1`、`load5`、`load15`（`mem_pct` 由查询时算出）。
+
+字段语义、`null` 与 `[]` 的区别、折线为什么要断开、错误码表——都在
+**[docs/API.md](docs/API.md)**。
 
 ## 快速开始
 
