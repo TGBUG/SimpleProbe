@@ -33,11 +33,6 @@ server 里**不存在任何向 agent 下发指令的代码路径**。面板即�
                                               nodes.yaml ─────┘ 节点身份唯一真源
 ```
 
-**服务端只是个 HTTP 端点。** 它监听配置里的地址，不假设前面有没有代理，也**不读
-`X-Forwarded-For`**（代码里没有任何地方读客户端 IP）。所以 nginx / Caddy / Traefik /
-云厂商 LB 都能用，**也可以完全不用**——直接暴露端口，或只在内网跑。
-TLS 由谁终止是部署方的事，服务端代码里没有证书逻辑。
-
 ## 目录
 
 | 路径 | 作用 |
@@ -122,15 +117,15 @@ systemctl reload simple-probe-server        # 等价于 kill -HUP <pid>，不用
 ## 部署
 
 发布物是静态二进制（agent ≈ 3 MB，server ≈ 5 MB，压缩后），
-支持 `linux/amd64`、`linux/arm64`、`linux/armv7`，不依赖 glibc、不需要装运行时。
+支持 `linux/amd64`、`linux/arm64`、`linux/armv7`
 
 ### 文件都放在哪
 
 **除了 systemd 单元，所有东西都在同一个目录里**——二进制、配置、数据、前端。
-那个目录你自己选（`--dir`），不指定就是**当前目录**：
+安装目录取自（`--dir`），不指定就是**当前运行目录**：
 
 ```
-/opt/simpleprobe/            ← 举例，实际由你定
+/opt/simpleprobe/
 ├── bin/
 │   ├── server 或 agent
 │   └── add-node.sh          仅 server
@@ -140,12 +135,8 @@ systemctl reload simple-probe-server        # 等价于 kill -HUP <pid>，不用
 │   └── probe.db             仅 server
 └── web/                     仅 server
 
-/etc/systemd/system/simple-probe-server.service    ← 只有这个挪不了
+/etc/systemd/system/simple-probe-server.service
 ```
-
-好处很直接：备份 = `tar` 一个目录；搬家 = `mv` 一个目录再改单元里的路径；
-删干净 = `rm -rf` 一个目录。**服务以这个目录的属主身份运行**，所以目录是它自己的，
-配置也能保持 `0600` 而不是被迫放宽。
 
 ### 一键安装
 
@@ -164,23 +155,8 @@ curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install
   | sudo bash -s -- agent --server https://probe.example.com --node web01 --token <token>
 ```
 
-安装脚本：解析参数 → 下载 release 包 → **校验 SHA256（不匹配就拒绝安装）**
-→ 装文件 → 用组件自己的 `-check` 验一遍配置 → 启动。
-重跑同一条命令就是升级，配置不会被覆盖（要覆盖加 `--force`）。
-
-`add-node.sh` 可以反复用，一次加一台；装 server 的时候**不需要**预先知道有几个
-节点。如果 `nodes.yaml` 里的 `listen` 是回环地址，它会明确提示你手填 server 的
-可达地址，而不是自作聪明给一个 agent 连不上的 URL。
-
-其他开关：`--dry-run` 只打印计划；`--no-systemd` 只装文件（容器里用）；
+其他参数：`--dry-run` 只打印计划；`--no-systemd` 只装文件（容器里用）；
 `--from-dir` 从本地目录取包（离线安装）；`--version <tag>` 装指定版本。
-
-管道执行等于把远端代码直接交给 shell。要更稳妥就先下来看一眼：
-
-```bash
-curl -fsSLO https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh
-less install.sh && sudo bash install.sh server --dir /opt/simpleprobe
-```
 
 ### 卸载
 
@@ -205,33 +181,6 @@ sudo install -m 0600 nodes.yaml /opt/simpleprobe/etc/nodes.yaml
 sudo install -m 0644 deploy/simple-probe-server.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now simple-probe-server
 ```
-
-### 关于运行身份与配置权限
-
-**不创建任何账户。** 服务以**安装目录的属主**身份运行（`User=` 由安装脚本写入）。
-`sudo` 安装时它用 `$SUDO_USER`，也就是你；安装完目录会交还给你，
-以后改配置不用 `sudo`。
-
-之所以敢省掉账户，是因为 agent 与 server 之间只有「agent 单向上报」这一条链路，
-server 侧不存在任何向 agent 下发指令的代码路径——为只读进程单独建账户收益有限。
-
-这个安排顺带解决了一个之前被迫做的妥协：**配置可以保持 `0600`**。目录是服务自己的，
-它读得到；不需要为了迁就临时 uid 把明文 token 放宽到同机任何用户可读。
-
-以 root 直接安装（没有经过 sudo）时解析出来的运行用户就是 root，脚本会明确警告——
-那种情况下服务以 root 运行。想避免就用普通用户身份装到 ta 自己的目录。
-
-### 发布新版本
-
-```bash
-make release VERSION=v0.4.3        # 本地打包，产物在 dist/
-```
-
-在 GitHub 上：Actions → Release → Run workflow，填一个 `v*` 版本号；
-或者直接推一个 `v*` tag。工作流会交叉编译三个平台、生成 `SHA256SUMS`、
-把 6 个包和 `install.sh` 一起挂到 release 上。
-
-反代**不是必需品**，要用的话 `deploy/` 下有 nginx 与 Caddy 两份等价示例。
 
 ## 几个刻意的取舍
 
