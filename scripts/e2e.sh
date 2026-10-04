@@ -271,47 +271,64 @@ echo "  构建出 $(find "$WORK/dist" -name '*.tar.gz' | wc -l) 个包"
 
 INST_PORT=$((PORT + 1))
 INST="$WORK/inst"
+INST_A="$WORK/inst-agent"
+# 单元本来该进 /etc/systemd/system；这里指到临时目录，好在不碰宿主系统的前提下
+# 验证「装单元 → 卸载」这条路径。
+export SIMPLEPROBE_UNIT_DIR="$WORK/units"
+mkdir -p "$SIMPLEPROBE_UNIT_DIR"
 
-# 1) 装 server。注意这里**没有** --node：装完 nodes 应该是空列表，
-#    加节点是 add-node.sh 的事。
+# 1) 装 server。注意这里**没有** --node：装完 nodes 应该是空的，
+#    加节点是 add-node.sh 的事。所有文件都进 $INST 这一个目录。
 "$ROOT/scripts/install.sh" server \
-  --listen "127.0.0.1:$INST_PORT" --db "$INST/probe.db" \
-  --prefix "$INST/probe" --conf-dir "$INST/etc" \
+  --listen "127.0.0.1:$INST_PORT" \
+  --dir "$INST" \
   --version e2e --from-dir "$WORK/dist" --no-systemd >"$WORK/install-server.log" 2>&1 ||
   { echo "  安装 server 失败："; tail -20 "$WORK/install-server.log"; exit 1; }
 
 grep -qE '^nodes:[[:space:]]*$' "$INST/etc/nodes.yaml" ||
   { echo "  装完应该是裸的 nodes:（可追加形式），实际："; cat "$INST/etc/nodes.yaml"; exit 1; }
-test -x "$INST/probe/bin/add-node.sh" ||
+test -x "$INST/bin/add-node.sh" ||
   { echo "  add-node.sh 没有被一起装上——装完就没法加节点了"; exit 1; }
-echo "  server 装好（nodes 为空，add-node.sh 已随包安装）"
+test -d "$INST/data" && test -d "$INST/web" ||
+  { echo "  安装目录结构不完整（应有 bin/ etc/ data/ web/）"; ls -la "$INST"; exit 1; }
+# 数据必须在安装目录里，不能还在 /var/lib。
+grep -q "db: \"$INST/data/probe.db\"" "$INST/etc/nodes.yaml" ||
+  { echo "  数据库路径没落在安装目录里："; cat "$INST/etc/nodes.yaml"; exit 1; }
+echo "  server 装好（bin/ etc/ data/ web/ 同在一个目录，nodes 为空）"
+
+# 旧参数应当被明确拒绝，而不是被默默忽略。
+if "$ROOT/scripts/install.sh" server --prefix /tmp/x >/dev/null 2>&1; then
+  echo "  --prefix 是 v0.4.x 的参数，现在应该报未知参数"; exit 1
+fi
 
 # 2) 用随包安装的 add-node.sh 加节点。故意不给 --server-url：
 #    默认 listen 是回环地址，脚本必须提示手填，而不是自作聪明地
 #    生成一个指向 agent 自己的 URL（那会静默失败，最难查）。
-"$INST/probe/bin/add-node.sh" --nodes "$INST/etc/nodes.yaml" \
-  --id inst --name "装出来的" --out "$WORK" >"$WORK/add-node.log" 2>&1 ||
+"$INST/bin/add-node.sh" --id inst --name "装出来的" --out "$WORK" >"$WORK/add-node.log" 2>&1 ||
   { echo "  add-node.sh 失败："; cat "$WORK/add-node.log"; exit 1; }
 
 grep -q 'id: inst' "$INST/etc/nodes.yaml" || { echo "  add-node.sh 没把节点写进配置"; exit 1; }
 grep -q '<server 的可达地址>' "$WORK/add-node.log" ||
   { echo "  listen 是回环地址时应提示手填，实际输出没有提示"; cat "$WORK/add-node.log"; exit 1; }
-echo "  用 add-node.sh 加好节点（回环地址的提示也正确）"
+# 配置权限应保持只有属主可读（服务以目录属主身份运行，不需要放宽到 0644）。
+mode="$(stat -c '%a' "$INST/etc/nodes.yaml")"
+[[ "$mode" == "600" ]] || { echo "  nodes.yaml 权限应为 600，实际 $mode"; exit 1; }
+echo "  用 add-node.sh 加好节点（回环提示正确，配置保持 0600）"
 
 # 3) 装 agent，把节点真正接上。
 INST_TOKEN="$(awk '/token:/{gsub(/[" ]/,"",$2);print $2;exit}' "$INST/etc/nodes.yaml")"
 "$ROOT/scripts/install.sh" agent \
   --server "http://127.0.0.1:$INST_PORT" --node inst --token "$INST_TOKEN" --interval 5s \
-  --prefix "$INST/probe-a" --conf-dir "$INST/etc-a" \
+  --dir "$INST_A" \
   --version e2e --from-dir "$WORK/dist" --no-systemd >"$WORK/install-agent.log" 2>&1 ||
   { echo "  安装 agent 失败："; tail -20 "$WORK/install-agent.log"; exit 1; }
 echo "  agent 装好"
 
-"$INST/probe/bin/server" -config "$INST/etc/nodes.yaml" -web "$INST/probe/web" \
+"$INST/bin/server" -config "$INST/etc/nodes.yaml" -web "$INST/web" \
   >"$WORK/inst-server.log" 2>&1 &
 INST_SRV=$!
 sleep 2
-"$INST/probe-a/bin/agent" -config "$INST/etc-a/agent.yaml" >"$WORK/inst-agent.log" 2>&1 &
+"$INST_A/bin/agent" -config "$INST_A/etc/agent.yaml" >"$WORK/inst-agent.log" 2>&1 &
 INST_AG=$!
 sleep 12
 
@@ -335,6 +352,30 @@ kill "$INST_AG" "$INST_SRV" 2>/dev/null || true
 wait "$INST_AG" "$INST_SRV" 2>/dev/null || true
 INST_AG=""
 INST_SRV=""
+
+echo "== 卸载：只清 systemd 配置 =="
+# 造一个假的单元文件——真装单元需要 root，而且这段要验的是"卸载删了什么、
+# 没删什么"，不是 systemd 本身。
+cat >"$SIMPLEPROBE_UNIT_DIR/simple-probe-server.service" <<EOF
+[Unit]
+Description=fake unit for e2e
+
+[Service]
+WorkingDirectory=$INST
+EOF
+
+"$ROOT/scripts/install.sh" uninstall server --no-systemd >"$WORK/uninstall.log" 2>&1 ||
+  { echo "  卸载失败："; cat "$WORK/uninstall.log"; exit 1; }
+
+test ! -e "$SIMPLEPROBE_UNIT_DIR/simple-probe-server.service" ||
+  { echo "  单元文件没被删掉"; exit 1; }
+test -f "$INST/etc/nodes.yaml" ||
+  { echo "  卸载只该清 systemd 配置，不该删文件——但 nodes.yaml 不见了"; exit 1; }
+test -d "$INST/data" ||
+  { echo "  卸载不该删数据目录"; exit 1; }
+grep -q "$INST" "$WORK/uninstall.log" ||
+  { echo "  卸载应当告诉运维文件还在哪，实际没提 $INST："; cat "$WORK/uninstall.log"; exit 1; }
+echo "  单元已移除；配置文件与数据原样保留，并提示了它们在哪"
 
 echo
 echo "全部通过 ✅"

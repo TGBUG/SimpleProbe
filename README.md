@@ -89,7 +89,7 @@ make ci            # 本地一条命令复现 CI（格式/静态检查/单测/�
 # 1) server 端配置（权限 0600，不要进 Git——里面是明文 token）
 cat > nodes.yaml <<'EOF'
 listen: "127.0.0.1:8080"
-db: "/var/lib/probe/probe.db"
+db: "./data/probe.db"
 nodes:
   - id: web01
     display_name: "Web 01"
@@ -124,84 +124,107 @@ systemctl reload simple-probe-server        # 等价于 kill -HUP <pid>，不用
 发布物是静态二进制（agent ≈ 3 MB，server ≈ 5 MB，压缩后），
 支持 `linux/amd64`、`linux/arm64`、`linux/armv7`，不依赖 glibc、不需要装运行时。
 
+### 文件都放在哪
+
+**除了 systemd 单元，所有东西都在同一个目录里**——二进制、配置、数据、前端。
+那个目录你自己选（`--dir`），不指定就是**当前目录**：
+
+```
+/opt/simpleprobe/            ← 举例，实际由你定
+├── bin/
+│   ├── server 或 agent
+│   └── add-node.sh          仅 server
+├── etc/
+│   └── nodes.yaml 或 agent.yaml
+├── data/
+│   └── probe.db             仅 server
+└── web/                     仅 server
+
+/etc/systemd/system/simple-probe-server.service    ← 只有这个挪不了
+```
+
+好处很直接：备份 = `tar` 一个目录；搬家 = `mv` 一个目录再改单元里的路径；
+删干净 = `rm -rf` 一个目录。**服务以这个目录的属主身份运行**，所以目录是它自己的，
+配置也能保持 `0600` 而不是被迫放宽。
+
 ### 一键安装
 
 ```bash
-# 1) server（装完 nodes 是空的，这是正常的）
+# 1) server。先 cd 到你想装的地方，或者用 --dir 明说。
 curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh \
-  | sudo bash -s -- server
+  | sudo bash -s -- server --dir /opt/simpleprobe
 
-# 2) 加第一台机器——add-node.sh 随 server 包一起装到了 /opt/probe/bin/
-sudo /opt/probe/bin/add-node.sh --id web01 --name "Web 01"
+# 2) 加第一台机器。add-node.sh 随 server 包一起装到了 bin/ 下，
+#    默认路径都从它自身位置推出，不需要额外参数。
+sudo /opt/simpleprobe/bin/add-node.sh --id web01 --name "Web 01"
 sudo systemctl reload simple-probe-server
 
-# 3) agent（add-node.sh 会把这条命令连同 token 一起打印出来）
+# 3) agent（上一步会把这条命令连同 token 一起打印出来）
 curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh \
   | sudo bash -s -- agent --server https://probe.example.com --node web01 --token <token>
 ```
 
-安装脚本只做五件事：解析参数 → 下载 release 包 → **校验 SHA256（不匹配就拒绝
-安装）** → 装二进制与 systemd 单元 → 用组件自己的 `-check` 验一遍配置。
+安装脚本：解析参数 → 下载 release 包 → **校验 SHA256（不匹配就拒绝安装）**
+→ 装文件 → 用组件自己的 `-check` 验一遍配置 → 启动。
 重跑同一条命令就是升级，配置不会被覆盖（要覆盖加 `--force`）。
 
 `add-node.sh` 可以反复用，一次加一台；装 server 的时候**不需要**预先知道有几个
 节点。如果 `nodes.yaml` 里的 `listen` 是回环地址，它会明确提示你手填 server 的
 可达地址，而不是自作聪明给一个 agent 连不上的 URL。
 
+其他开关：`--dry-run` 只打印计划；`--no-systemd` 只装文件（容器里用）；
+`--from-dir` 从本地目录取包（离线安装）；`--version <tag>` 装指定版本。
+
 管道执行等于把远端代码直接交给 shell。要更稳妥就先下来看一眼：
 
 ```bash
 curl -fsSLO https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh
-less install.sh && sudo bash install.sh server
+less install.sh && sudo bash install.sh server --dir /opt/simpleprobe
 ```
 
-`--dry-run` 只打印计划；`--no-systemd` 只装文件（容器里用）；
-`--from-dir` 从本地目录取包（离线安装）。
+### 卸载
+
+```bash
+curl -fsSL .../install.sh | sudo bash -s -- uninstall server    # 或 uninstall agent
+```
+
+**只清 systemd 配置**（停服务、删单元、`daemon-reload`），
+**不删任何数据或配置文件**。它会先从单元里读出安装目录，跑完告诉你文件还在哪，
+想删自己 `rm -rf`。这样卸载不会误伤你辛苦攒的历史数据。
 
 ### 从源码装
 
 ```bash
-make build                 # 产出 bin/server 与 bin/agent
-sudo install -m 0755 bin/server /opt/probe/bin/server
-sudo install -m 0755 scripts/add-node.sh /opt/probe/bin/add-node.sh
-sudo install -d -m 0755 /opt/probe/web && sudo cp web/* /opt/probe/web/
-sudo install -d -m 0755 /etc/probe
-sudo install -m 0644 nodes.yaml /etc/probe/nodes.yaml
+make build                      # 产出 bin/server 与 bin/agent
+sudo install -d /opt/simpleprobe/{bin,etc,data,web}
+sudo install -m 0755 bin/server /opt/simpleprobe/bin/server
+sudo install -m 0755 scripts/add-node.sh /opt/simpleprobe/bin/add-node.sh
+sudo cp web/* /opt/simpleprobe/web/
+sudo install -m 0600 nodes.yaml /opt/simpleprobe/etc/nodes.yaml
+# 单元模板里的 /opt/simpleprobe 与 User=probe 按你的实际情况改掉
 sudo install -m 0644 deploy/simple-probe-server.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now simple-probe-server
 ```
 
-### 关于账户与配置权限
+### 关于运行身份与配置权限
 
-**不需要创建任何账户。** 两个单元都用 `DynamicUser=yes`：systemd 启动时临时分配
-一个 uid，服务不是 root，但也不用 `useradd`。数据库目录由 `StateDirectory=probe`
-自动创建并交给那个 uid。
+**不创建任何账户。** 服务以**安装目录的属主**身份运行（`User=` 由安装脚本写入）。
+`sudo` 安装时它用 `$SUDO_USER`，也就是你；安装完目录会交还给你，
+以后改配置不用 `sudo`。
 
 之所以敢省掉账户，是因为 agent 与 server 之间只有「agent 单向上报」这一条链路，
 server 侧不存在任何向 agent 下发指令的代码路径——为只读进程单独建账户收益有限。
-**但非 root 这条保住了**：DynamicUser 的成本是零，那就没必要退回 root。
 
-代价是配置必须是 `0644`：服务跑在临时 uid 上，读不了 `0600` 的 root 文件；
-而 SIGHUP 热加载要求服务能直接读那个路径（`LoadCredential` 给的是启动时的快照，
-reload 会读到旧内容）。也就是说 **`nodes.yaml` / `agent.yaml` 里那个明文 token
-同机任何用户可读**——按前面的判断，它泄露的最坏后果是"可以伪造监控数据"。
+这个安排顺带解决了一个之前被迫做的妥协：**配置可以保持 `0600`**。目录是服务自己的，
+它读得到；不需要为了迁就临时 uid 把明文 token 放宽到同机任何用户可读。
 
-想收紧的话，把单元换成静态用户（`User=probe` + `useradd`），配置改回 `0600`：
-
-```ini
-# 替换 DynamicUser=yes 这两行
-User=probe
-Group=probe
-```
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin probe
-sudo chown probe:probe /etc/probe/nodes.yaml && sudo chmod 0600 /etc/probe/nodes.yaml
-```
+以 root 直接安装（没有经过 sudo）时解析出来的运行用户就是 root，脚本会明确警告——
+那种情况下服务以 root 运行。想避免就用普通用户身份装到 ta 自己的目录。
 
 ### 发布新版本
 
 ```bash
-make release VERSION=v0.4.0        # 本地打包，产物在 dist/
+make release VERSION=v0.4.3        # 本地打包，产物在 dist/
 ```
 
 在 GitHub 上：Actions → Release → Run workflow，填一个 `v*` 版本号；
@@ -229,6 +252,7 @@ make release VERSION=v0.4.0        # 本地打包，产物在 dist/
 - ✅ v0.2 历史曲线 `/api/v1/series` + 详情页
 - ✅ v0.3 部署件 + 前端收口（概览条、区间极值、主题契约）
 - ✅ v0.4 Release 工作流（三平台静态二进制 + SHA256SUMS）+ 一键安装脚本 + 去掉建账户步骤
+- ✅ v0.5 单目录布局（`--dir`，默认当前目录）+ 运行身份改为目录属主（配置回到 0600）+ `uninstall`
 - ⏳ 候选：离线 webhook 告警
 
 `make e2e` 覆盖的验收：真实 `/proc` 数据落库、停掉 agent 后在线率确实下降、

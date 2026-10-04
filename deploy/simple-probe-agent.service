@@ -7,16 +7,20 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-# ---- 运行身份：不创建任何账户 ----
+# ---- 运行身份 ----
 #
-# agent 只做两件事：读 /proc 与 statvfs，然后单向 POST 出去。它不接受任何
-# 入站连接，server 也无法让它执行任何东西。所以单独建账户意义有限；
-# DynamicUser 让 systemd 临时分配一个 uid——省掉 useradd，同时仍不是 root。
-DynamicUser=yes
-WorkingDirectory=/opt/probe
+# 安装脚本会把下面这行改成「安装目录的属主」，不新建任何账户。
+# agent 只读 /proc 与 statvfs、纯出站、不接受任何入站连接。
+#
+# 手动部署的话：把 probe 换成一个已存在的非 root 用户，
+# 并把安装目录 chown 给 ta，否则服务读不到配置。
+User=probe
 
-# agent.yaml 里是明文 token，默认 0644（见 README 的说明与更严的替代方案）。
-ExecStart=/opt/probe/bin/agent -config /etc/probe/agent.yaml
+WorkingDirectory=/opt/simpleprobe
+
+# ---- 全部文件都在安装目录里 ----
+# 只有这个 systemd 单元没法挪，必须待在 /etc/systemd/system。
+ExecStart=/opt/simpleprobe/bin/agent -config /opt/simpleprobe/etc/agent.yaml
 
 # 纯出站：不需要开任何入站端口，也不需要任何 capability。
 Restart=always
@@ -41,7 +45,7 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 
 # ---- 下面两项收紧得更狠，也更容易在特殊环境里出问题 ----
-# 若启动失败，先看 journalctl -u probe-agent，把这两行注释掉再试。
+# 若启动失败，先看 journalctl -u simple-probe-agent，把这两行注释掉再试。
 MemoryDenyWriteExecute=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM

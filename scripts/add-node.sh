@@ -50,11 +50,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# 默认值对齐一键安装的布局：配置在 /etc/probe/nodes.yaml，
-# server 二进制在 /opt/probe/bin/server。注意 --bin 的默认值是
-# $SELF_DIR/../bin/server，所以脚本被装到 /opt/probe/bin/add-node.sh 时
-# 不需要任何参数就能跑。
-NODES="${NODES:-/etc/probe/nodes.yaml}"
+# 默认值对齐一键安装的布局：脚本装在 $DIR/bin/，配置就在 $DIR/etc/。
+# 两个默认值都从脚本自身位置推出来，所以装到任何目录都不需要额外参数。
+NODES="${NODES:-$SELF_DIR/../etc/nodes.yaml}"
+# 归一化，免得后面每条提示都拖着一串 ../。
+NODES="$(realpath -m "$NODES" 2>/dev/null || printf '%s' "$NODES")"
 
 if [[ -z "$ID" ]]; then
   usage >&2
@@ -65,8 +65,7 @@ fi
 BIN="${BIN:-$SELF_DIR/../bin/server}"
 [[ -x "$BIN" ]] || { echo "找不到可执行的 server：$BIN（先 make build，或用 --bin 指定）" >&2; exit 1; }
 
-# 配置目录跟随 --nodes 的位置：一键安装可以用 --conf-dir 改路径，
-# 这里跟着走，后面提到 agent 配置文件该放哪时才不会说错。
+# 配置目录跟随 --nodes 的位置，后面提到 agent 配置文件该放哪时才不会说错。
 CONF_DIR="$(cd "$(dirname "$NODES")" && pwd)"
 
 NAME="${NAME:-$ID}"
@@ -95,6 +94,12 @@ TOKEN="$(openssl rand -hex 32)"
 BACKUP="$NODES.bak.$(date +%Y%m%d%H%M%S)"
 cp -p "$NODES" "$BACKUP"
 
+# 记下原始属主与权限。用 root 跑这个脚本时（很常见：sudo bin/add-node.sh），
+# sed -i 会新建一个文件、属主变成 root，而服务是以「安装目录的属主」身份运行的，
+# 那样它就再也读不到自己的配置了。改完统一还回去。
+ORIG_OWNER="$(stat -c '%u:%g' "$NODES" 2>/dev/null || true)"
+ORIG_MODE="$(stat -c '%a' "$NODES" 2>/dev/null || true)"
+
 # 这个脚本的加节点方式是「往文件末尾追加一个列表项」，所以文件末尾必须是
 # 裸的 `nodes:`。如果写的是 `nodes: []`（v0.4.x 的 install.sh 就是这么写的），
 # 追加会得到非法 YAML：
@@ -108,6 +113,12 @@ if grep -qE '^[[:space:]]*nodes:[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$NOD
 fi
 
 printf '  - id: %s\n    display_name: "%s"\n    token: "%s"\n' "$ID" "$NAME" "$TOKEN" >>"$NODES"
+
+restore_meta() {
+  [[ -n "$ORIG_OWNER" ]] && chown "$ORIG_OWNER" "$NODES" 2>/dev/null || true
+  [[ -n "$ORIG_MODE" ]] && chmod "$ORIG_MODE" "$NODES" 2>/dev/null || true
+}
+restore_meta
 
 # 用 server 自己的解析器做校验——它才是规则的唯一权威。
 if ! "$BIN" -check -config "$NODES" >/dev/null 2>"$OUT_DIR/.add-node.err"; then
@@ -182,8 +193,8 @@ cat <<EOF
 
     $AGENT_FILE              →  目标机的 $CONF_DIR/agent.yaml
 
-  手装时注意权限：服务用的是 DynamicUser（临时 uid），配置得是 0644，
-  否则服务读不到。install.sh 会自动处理好，手装才需要自己 chmod。
+  手装的话：保持 0600，并确保属主是运行服务的那个用户（也就是安装目录的
+  属主），否则服务读不到。install.sh 会自动处理好这些。
 
   原配置备份：
     $BACKUP

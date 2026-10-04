@@ -7,35 +7,33 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-# ---- 运行身份：不创建任何账户 ----
+# ---- 运行身份 ----
 #
-# agent 与 server 之间只有「agent 单向上报」这一条链路，server 侧不存在任何
-# 向 agent 下发指令的代码路径；为一个只读进程单独建系统账户收益有限。
-# DynamicUser 让 systemd 在启动时临时分配 uid，既省掉 useradd，又仍然不是
-# root——所以账户这一步省了，非 root 这条仍然保住了。
-DynamicUser=yes
+# 安装脚本会把下面这行改成「安装目录的属主」。服务以目录主人的身份运行：
+# 目录本来就是它的，所以配置可以保持 0600，也不用新建任何账户
+# （agent↔server 只有单向上报，server 侧不存在下发指令的代码路径）。
+#
+# 手动部署的话：把 probe 换成一个已存在的非 root 用户，
+# 并把安装目录 chown 给 ta，否则服务读不到配置、也写不了 data/。
+User=probe
 
-# 数据库目录由 systemd 创建并 chown 给那个临时 uid，所以配置文件里的
-# db 路径写 /var/lib/probe/probe.db 即可，不需要任何 chown 步骤。
-StateDirectory=probe
-StateDirectoryMode=0700
+WorkingDirectory=/opt/simpleprobe
 
-WorkingDirectory=/opt/probe
-
-# nodes.yaml 里是明文 token，默认 0644（见 README 的说明与更严的替代方案）。
-# 配置走文件路径而不是 LoadCredential，是为了让 SIGHUP 热加载真的有效——
-# credential 是启动时的快照，reload 读到的会是旧内容。
-ExecStart=/opt/probe/bin/server -config /etc/probe/nodes.yaml -web /opt/probe/web
+# ---- 全部文件都在安装目录里 ----
+# 只有这个 systemd 单元没法挪，必须待在 /etc/systemd/system。
+ExecStart=/opt/simpleprobe/bin/server -config /opt/simpleprobe/etc/nodes.yaml -web /opt/simpleprobe/web
 # 不想让 server 托管静态文件就删掉 -web，交给反代或干脆不用面板。
 
 Restart=on-failure
 RestartSec=3
 
-# 加机器不用重启：改完 /etc/probe/nodes.yaml 后 systemctl reload probe-server
+# 加机器不用重启：改完 etc/nodes.yaml 后 systemctl reload simple-probe-server
 ExecReload=/bin/kill -HUP $MAINPID
 
 # ---- 加固 ----
-# 这些项只收紧权限、不改变功能，正常情况下不会导致启动失败。
+# ProtectSystem=strict 会把整个文件系统挂成只读，所以数据目录要显式放行。
+ReadWritePaths=/opt/simpleprobe/data
+
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -51,7 +49,7 @@ RestrictRealtime=true
 CapabilityBoundingSet=
 
 # ---- 下面两项收紧得更狠，也更容易在特殊环境里出问题 ----
-# 若启动失败，先看 journalctl -u probe-server，把这两行注释掉再试。
+# 若启动失败，先看 journalctl -u simple-probe-server，把这两行注释掉再试。
 # Go 不做 JIT，禁用可写可执行内存是安全的。
 MemoryDenyWriteExecute=true
 SystemCallFilter=@system-service
