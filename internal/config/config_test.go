@@ -84,6 +84,18 @@ func TestLoadServer_SinceRFC3339(t *testing.T) {
 	}
 }
 
+func TestLoadServer_AllowsEmptyNodes(t *testing.T) {
+	// 空 nodes 不是配置错误，而是装完 server 之后、加第一个节点之前的正常状态。
+	// 曾经这里报错，导致 install.sh server 一装就在自检那步失败。
+	cfg, err := LoadServer(writeConfig(t, "db: /tmp/x.db\nnodes: []\n"))
+	if err != nil {
+		t.Fatalf("空 nodes 应被接受，却报错: %v", err)
+	}
+	if len(cfg.Nodes) != 0 {
+		t.Errorf("节点数 = %d，期望 0", len(cfg.Nodes))
+	}
+}
+
 func TestLoadServer_Errors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -91,7 +103,6 @@ func TestLoadServer_Errors(t *testing.T) {
 		wantMsg string
 	}{
 		{name: "缺 db", content: "nodes:\n  - id: a\n    token: t\n", wantMsg: "db"},
-		{name: "没有节点", content: "db: /tmp/x.db\nnodes: []\n", wantMsg: "nodes"},
 		{name: "节点缺 id", content: "db: /tmp/x.db\nnodes:\n  - token: t\n", wantMsg: "id"},
 		{name: "节点 id 非法字符", content: "db: /tmp/x.db\nnodes:\n  - id: \"a b\"\n    token: t\n", wantMsg: "id"},
 		{name: "节点 id 重复", content: "db: /tmp/x.db\nnodes:\n  - id: a\n    token: t\n  - id: a\n    token: u\n", wantMsg: "重复"},

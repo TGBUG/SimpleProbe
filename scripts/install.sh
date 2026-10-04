@@ -59,9 +59,11 @@ usage() {
   install.sh agent  --server <URL> --node <id> --token <token> [选项]
 
 server 选项：
-  --node <id>        顺便生成第一个节点并打印 agent 侧配置
   --listen <addr>    监听地址，默认 127.0.0.1:8080
   --db <path>        数据库路径，默认 /var/lib/probe/probe.db
+
+  服务端装完就是空的（nodes 为空列表），加节点用随包安装的 add-node.sh——
+  它一次加一个、可以反复用，比安装参数里塞一个节点方便。
 
 agent 选项：
   --server <URL>     server 地址，必填
@@ -117,6 +119,14 @@ if [[ "$MODE" == "agent" ]]; then
   [[ -n "$TOKEN" ]] || die "agent 模式必须给 --token"
   [[ "$NODE" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "节点 id 只允许字母、数字、点、下划线、连字符：$NODE"
   [[ "$INTERVAL" =~ ^[0-9]+(s|m|h)$ ]] || die "--interval 形如 30s / 5m / 1h：$INTERVAL"
+fi
+
+# server 模式不再收 --node。它只能加一个节点，装第二台机器时还得改配置重装，
+# 而 add-node.sh 可以反复用。给了就明确说清楚，别默默忽略。
+if [[ "$MODE" == "server" && -n "$NODE" ]]; then
+  die "server 模式不再接受 --node。装完 server 后用 add-node.sh 加节点（可反复用）：
+    $PREFIX/bin/add-node.sh --id <节点 id> --name \"<显示名>\"
+或者手写节点块后 systemctl reload simple-probe-server。"
 fi
 
 # 需要的不是 root 这个身份，而是"能写到目标位置"——所以按可写性判断，
@@ -232,11 +242,20 @@ fi
 step "解包"
 tar -xzf "$WORK/$ASSET" -C "$WORK"
 [[ -f "$WORK/$MODE" ]] || die "包里没有 $MODE 这个二进制"
-[[ -f "$WORK/deploy/probe-$MODE.service" ]] || die "包里没有 systemd 单元"
+[[ -f "$WORK/deploy/simple-probe-$MODE.service" ]] || die "包里没有 systemd 单元"
 
 step "安装"
 run install -d -m 0755 "$PREFIX/bin" "$CONF_DIR"
 run install -m 0755 "$WORK/$MODE" "$PREFIX/bin/$MODE"
+
+# 加节点的脚本对 server 是必需品：装完 nodes 是空的，没有它就没法加机器。
+# 它默认从自己所在目录的 ../bin/ 找 server 二进制，放在 $PREFIX/bin/ 下刚好对上。
+if [[ "$MODE" == "server" && -f "$WORK/add-node.sh" ]]; then
+  # 与单元文件同样处理：--conf-dir 改过路径时，把脚本里默认的 /etc/probe
+  # 一并换掉，否则装到自定义位置的用户每次都得自己传 --nodes。
+  sed "s|/etc/probe|$CONF_DIR|g" "$WORK/add-node.sh" >"$WORK/add-node.sh.rewritten"
+  run install -m 0755 "$WORK/add-node.sh.rewritten" "$PREFIX/bin/add-node.sh"
+fi
 
 # server 顺带把前端装上，这样 -web 开箱即用。
 if [[ "$MODE" == "server" && -d "$WORK/web" ]]; then
@@ -271,34 +290,26 @@ write_conf() {
 }
 
 if [[ "$MODE" == "server" ]]; then
-  if [[ -n "$NODE" ]]; then
-    [[ "$NODE" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "节点 id 只允许字母、数字、点、下划线、连字符：$NODE"
-    FIRST_TOKEN="$(openssl rand -hex 32)"
-    write_conf <<EOF
-# 由 install.sh 生成。改完不用重启：systemctl reload probe-server
+  write_conf <<EOF
+# 由 install.sh 生成。
+#
+# nodes 一开始是空的，这是正常的：装完 server 再用 add-node.sh 逐个加节点。
+# 写作 "nodes:"（而不是 "nodes: []"）是有意的——add-node.sh 的策略是往文件
+# 末尾追加列表项，"[]" 后面跟块序列是非法 YAML。
+#
+# 加节点：$PREFIX/bin/add-node.sh --id <节点 id> --name "<显示名>"
+# 加完不用重启：systemctl reload simple-probe-server
 listen: "$LISTEN"
 db: "$DB"
 
 nodes:
-  - id: $NODE
-    display_name: "$NODE"
-    token: "$FIRST_TOKEN"
 EOF
-  else
-    write_conf <<EOF
-# 由 install.sh 生成。加节点推荐用 release 包里的 add-node.sh，
-# 或者手写一个节点块后 systemctl reload probe-server。
-listen: "$LISTEN"
-db: "$DB"
-
-nodes: []
-EOF
-    log "  提示：nodes 还是空的。加第一个节点："
-    log "    $PREFIX/bin/server 需要一份带节点的配置——用 --node 重装，或手改上面的文件。"
-  fi
 else
   write_conf <<EOF
 # 由 install.sh 生成。
+#
+# 必须是 0644：DynamicUser 让服务跑在临时 uid 上，读不了 0600 的 root 文件。
+# 见 README 里关于配置权限的说明与更严的替代方案。
 server: "$SERVER_URL"
 node: "$NODE"
 token: "$TOKEN"
@@ -308,9 +319,11 @@ EOF
 fi
 
 # ---- 单元文件：prefix/conf-dir 被改写时，同步替换单元里的路径 ----
-UNIT_SRC="$WORK/deploy/probe-$MODE.service"
-UNIT_DST="/etc/systemd/system/probe-$MODE.service"
-UNIT_TMP="$WORK/probe-$MODE.service.rewritten"
+# 服务名带 simple- 前缀，避免与系统上别的 probe 服务撞名。
+UNIT_SRC="$WORK/deploy/simple-probe-$MODE.service"
+UNIT_DST="/etc/systemd/system/simple-probe-$MODE.service"
+UNIT_TMP="$WORK/simple-probe-$MODE.service.rewritten"
+UNIT_OLD="/etc/systemd/system/probe-$MODE.service"
 sed -e "s|/opt/probe|$PREFIX|g" -e "s|/etc/probe|$CONF_DIR|g" "$UNIT_SRC" >"$UNIT_TMP"
 
 if ((NO_SYSTEMD)); then
@@ -321,9 +334,16 @@ if ((NO_SYSTEMD)); then
     log "        /opt/probe 与 /etc/probe 替换成 $PREFIX 与 $CONF_DIR。"
   fi
 else
+  # v0.4.x 装过的话旧单元还叫 probe-*。两个服务抢同一个端口，新的会起不来，
+  # 所以先停掉再删掉旧的。
+  if [[ -e "$UNIT_OLD" ]]; then
+    log "  发现旧单元 probe-$MODE.service（v0.4.x 的服务名），先停掉并移除"
+    run systemctl disable --now "probe-$MODE" 2>/dev/null || true
+    run rm -f "$UNIT_OLD"
+  fi
   run install -m 0644 "$UNIT_TMP" "$UNIT_DST"
   run systemctl daemon-reload
-  run systemctl enable --now "probe-$MODE"
+  run systemctl enable --now "simple-probe-$MODE"
 fi
 
 # ---- 装完自检：让刚装上的二进制自己解析一次配置 ----
@@ -341,29 +361,25 @@ step "完成"
 if [[ "$MODE" == "server" ]]; then
   log "  面板  http://$LISTEN"
   log "  数据  $DB（首次启动自动创建）"
-  if [[ -n "$NODE" ]] && ((DRY_RUN == 0)); then
-    TOKEN_SHOWN="$(awk '/token:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF_FILE")"
-    cat <<EOF
+  cat <<EOF
 
-  把这个节点接到被监控机上（token 只显示这一次，也已经写进 $CONF_FILE）：
+  现在配置里还没有节点。加一台机器（可以反复执行，一次加一个）：
 
-    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh \\
-      | bash -s -- agent --server http://<server 的地址>:$(
-      echo "$LISTEN" | awk -F: '{print $NF}'
-    ) --node $NODE --token $TOKEN_SHOWN
+    $PREFIX/bin/add-node.sh --id <节点 id> --name "<显示名>"
+
+  它会生成 token、写进 $CONF_FILE，并打印 agent 侧那条一键安装命令。
 
 EOF
-  fi
   if ((NO_SYSTEMD == 0)); then
-    log "  状态  systemctl status probe-server"
-    log "  日志  journalctl -u probe-server -f"
-    log "  加机器后不用重启：systemctl reload probe-server"
+    log "  状态  systemctl status simple-probe-server"
+    log "  日志  journalctl -u simple-probe-server -f"
+    log "  加完节点不用重启：systemctl reload simple-probe-server"
   fi
 else
   log "  节点  $NODE → $SERVER_URL"
   if ((NO_SYSTEMD == 0)); then
-    log "  状态  systemctl status probe-agent"
-    log "  日志  journalctl -u probe-agent -f"
+    log "  状态  systemctl status simple-probe-agent"
+    log "  日志  journalctl -u simple-probe-agent -f"
     log "  看是否上线  curl -s $SERVER_URL/api/v1/nodes"
   else
     log "  手动启动  $PREFIX/bin/agent -config $CONF_FILE"

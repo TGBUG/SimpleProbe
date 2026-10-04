@@ -85,7 +85,7 @@ YAML
   mkdir -p "$pkgdir/deploy"
   cp "$stage/agent" "$pkgdir/agent"
   cp "$ROOT/LICENSE" "$ROOT/README.md" "$pkgdir/"
-  cp "$ROOT/deploy/probe-agent.service" "$ROOT/deploy/agent.example.yaml" "$pkgdir/deploy/"
+  cp "$ROOT/deploy/simple-probe-agent.service" "$ROOT/deploy/agent.example.yaml" "$pkgdir/deploy/"
   agent_pkg="simpleprobe-agent_${VERSION}_linux_${p}.tar.gz"
   tar -czf "$DIST/$agent_pkg" -C "$pkgdir" .
 
@@ -94,9 +94,12 @@ YAML
   mkdir -p "$pkgdir/deploy"
   cp "$stage/server" "$pkgdir/server"
   cp "$ROOT/LICENSE" "$ROOT/README.md" "$pkgdir/"
-  cp "$ROOT/deploy/probe-server.service" "$ROOT/deploy/nodes.example.yaml" "$pkgdir/deploy/"
+  cp "$ROOT/deploy/simple-probe-server.service" "$ROOT/deploy/nodes.example.yaml" "$pkgdir/deploy/"
   # 前端一起带上：server 加 -web 就能直接托管面板，不用再单独分发。
   cp -r "$ROOT/web" "$pkgdir/web"
+  # 加节点的脚本必须一起带上：否则一键装完 server 之后，官方推荐的加节点方式
+  # （add-node.sh）在这台机器上根本不存在。
+  cp "$ROOT/scripts/add-node.sh" "$pkgdir/add-node.sh"
   server_pkg="simpleprobe-server_${VERSION}_linux_${p}.tar.gz"
   tar -czf "$DIST/$server_pkg" -C "$pkgdir" .
 

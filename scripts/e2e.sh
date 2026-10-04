@@ -254,7 +254,7 @@ for path in / /detail.html?node=local /app.css /app.js; do
 done
 curl -fsS -o /dev/null -w "  GET /api/v1/health => HTTP %{http_code}\n" "http://127.0.0.1:$PORT/api/v1/health"
 
-echo "== 一键安装：用 release 包装进临时前缀并跑起来 =="
+echo "== 一键安装：release 包 → 临时前缀 → 加节点 → 跑起来 =="
 # 安装脚本现在是主要的部署路径，它坏了就什么都装不上，所以纳入验收。
 # 用 --no-systemd + 自定义前缀把它限制在临时目录里，不碰宿主系统。
 HOST_ARCH="$(uname -m)"
@@ -271,13 +271,34 @@ echo "  构建出 $(find "$WORK/dist" -name '*.tar.gz' | wc -l) 个包"
 
 INST_PORT=$((PORT + 1))
 INST="$WORK/inst"
-"$ROOT/scripts/install.sh" server --node inst \
+
+# 1) 装 server。注意这里**没有** --node：装完 nodes 应该是空列表，
+#    加节点是 add-node.sh 的事。
+"$ROOT/scripts/install.sh" server \
   --listen "127.0.0.1:$INST_PORT" --db "$INST/probe.db" \
   --prefix "$INST/probe" --conf-dir "$INST/etc" \
   --version e2e --from-dir "$WORK/dist" --no-systemd >"$WORK/install-server.log" 2>&1 ||
   { echo "  安装 server 失败："; tail -20 "$WORK/install-server.log"; exit 1; }
-echo "  server 装好"
 
+grep -qE '^nodes:[[:space:]]*$' "$INST/etc/nodes.yaml" ||
+  { echo "  装完应该是裸的 nodes:（可追加形式），实际："; cat "$INST/etc/nodes.yaml"; exit 1; }
+test -x "$INST/probe/bin/add-node.sh" ||
+  { echo "  add-node.sh 没有被一起装上——装完就没法加节点了"; exit 1; }
+echo "  server 装好（nodes 为空，add-node.sh 已随包安装）"
+
+# 2) 用随包安装的 add-node.sh 加节点。故意不给 --server-url：
+#    默认 listen 是回环地址，脚本必须提示手填，而不是自作聪明地
+#    生成一个指向 agent 自己的 URL（那会静默失败，最难查）。
+"$INST/probe/bin/add-node.sh" --nodes "$INST/etc/nodes.yaml" \
+  --id inst --name "装出来的" --out "$WORK" >"$WORK/add-node.log" 2>&1 ||
+  { echo "  add-node.sh 失败："; cat "$WORK/add-node.log"; exit 1; }
+
+grep -q 'id: inst' "$INST/etc/nodes.yaml" || { echo "  add-node.sh 没把节点写进配置"; exit 1; }
+grep -q '<server 的可达地址>' "$WORK/add-node.log" ||
+  { echo "  listen 是回环地址时应提示手填，实际输出没有提示"; cat "$WORK/add-node.log"; exit 1; }
+echo "  用 add-node.sh 加好节点（回环地址的提示也正确）"
+
+# 3) 装 agent，把节点真正接上。
 INST_TOKEN="$(awk '/token:/{gsub(/[" ]/,"",$2);print $2;exit}' "$INST/etc/nodes.yaml")"
 "$ROOT/scripts/install.sh" agent \
   --server "http://127.0.0.1:$INST_PORT" --node inst --token "$INST_TOKEN" --interval 5s \

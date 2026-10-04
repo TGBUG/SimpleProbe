@@ -109,15 +109,15 @@ EOF
 ./bin/agent  -config agent.yaml
 ```
 
-加一台机器（推荐用脚本，它会校验并生成 agent 配置）：
+加一台机器（推荐用脚本，它会校验配置并生成 agent 侧的命令）：
 
 ```bash
-./scripts/add-node.sh --nodes /etc/probe/nodes.yaml --id nas --name "NAS"
-systemctl reload probe-server        # 等价于 kill -HUP <pid>，不用重启
+./scripts/add-node.sh --id nas --name "NAS"
+systemctl reload simple-probe-server        # 等价于 kill -HUP <pid>，不用重启
 ```
 
-脚本会打印 agent 侧要执行的命令。手改也行：编辑 `nodes.yaml` 加一个节点块，
-然后 `kill -HUP`。
+脚本会打印 agent 侧要执行的一键安装命令。手改也行：编辑 `nodes.yaml` 加一个
+节点块，然后 `kill -HUP`。
 
 ## 部署
 
@@ -127,24 +127,32 @@ systemctl reload probe-server        # 等价于 kill -HUP <pid>，不用重启
 ### 一键安装
 
 ```bash
-# server
+# 1) server（装完 nodes 是空的，这是正常的）
 curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh \
-  | sudo bash -s -- server --node web01
+  | sudo bash -s -- server
 
-# agent（装在每台被监控机上；命令由上面的 server 安装打印出来）
+# 2) 加第一台机器——add-node.sh 随 server 包一起装到了 /opt/probe/bin/
+sudo /opt/probe/bin/add-node.sh --id web01 --name "Web 01"
+sudo systemctl reload simple-probe-server
+
+# 3) agent（add-node.sh 会把这条命令连同 token 一起打印出来）
 curl -fsSL https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh \
   | sudo bash -s -- agent --server https://probe.example.com --node web01 --token <token>
 ```
 
-脚本只做五件事：解析参数 → 下载 release 包 → **校验 SHA256（不匹配就拒绝安装）**
-→ 装二进制与 systemd 单元 → 启动。重跑同一条命令就是升级，配置不会被覆盖
-（要覆盖加 `--force`）。
+安装脚本只做五件事：解析参数 → 下载 release 包 → **校验 SHA256（不匹配就拒绝
+安装）** → 装二进制与 systemd 单元 → 用组件自己的 `-check` 验一遍配置。
+重跑同一条命令就是升级，配置不会被覆盖（要覆盖加 `--force`）。
+
+`add-node.sh` 可以反复用，一次加一台；装 server 的时候**不需要**预先知道有几个
+节点。如果 `nodes.yaml` 里的 `listen` 是回环地址，它会明确提示你手填 server 的
+可达地址，而不是自作聪明给一个 agent 连不上的 URL。
 
 管道执行等于把远端代码直接交给 shell。要更稳妥就先下来看一眼：
 
 ```bash
 curl -fsSLO https://github.com/TGBUG/SimpleProbe/releases/latest/download/install.sh
-less install.sh && sudo bash install.sh server --node web01
+less install.sh && sudo bash install.sh server
 ```
 
 `--dry-run` 只打印计划；`--no-systemd` 只装文件（容器里用）；
@@ -155,11 +163,12 @@ less install.sh && sudo bash install.sh server --node web01
 ```bash
 make build                 # 产出 bin/server 与 bin/agent
 sudo install -m 0755 bin/server /opt/probe/bin/server
+sudo install -m 0755 scripts/add-node.sh /opt/probe/bin/add-node.sh
 sudo install -d -m 0755 /opt/probe/web && sudo cp web/* /opt/probe/web/
 sudo install -d -m 0755 /etc/probe
 sudo install -m 0644 nodes.yaml /etc/probe/nodes.yaml
-sudo install -m 0644 deploy/probe-server.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now probe-server
+sudo install -m 0644 deploy/simple-probe-server.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now simple-probe-server
 ```
 
 ### 关于账户与配置权限

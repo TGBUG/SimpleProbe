@@ -72,9 +72,11 @@ func (c *Server) Normalize() error {
 	if c.DB == "" {
 		return errors.New("db 不能为空")
 	}
-	if len(c.Nodes) == 0 {
-		return errors.New("nodes 不能为空")
-	}
+	// nodes 允许为空。这不是配置错误，而是装 server 之后的正常中间状态：
+	// 先起服务、再用 add-node.sh 逐个加节点。面板本来就能显示"还没有节点"。
+	// （曾经这里返回错误，结果 install.sh server 一装上就在自检那步失败——
+	//   必须一次给一个节点才能装，那正是我们要去掉的限制。）
+	// 空列表仍然值得提醒，但那属于运行期的事，由 server 启动时告警，不在这里拦。
 
 	seen := make(map[string]struct{}, len(c.Nodes))
 	for i := range c.Nodes {

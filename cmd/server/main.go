@@ -51,6 +51,13 @@ func run() error {
 		return nil
 	}
 
+	// 空节点列表是允许的（装完 server、还没加节点时的正常状态），但值得说一声，
+	// 否则容易对着一个空面板怀疑是不是装坏了。
+	if len(cfg.Nodes) == 0 {
+		logger.Warn("配置里还没有任何节点，面板会是空的",
+			"怎么加", "用 add-node.sh 加一个节点，再 systemctl reload（或 kill -HUP）")
+	}
+
 	st, err := store.Open(cfg.DB, cfg.Nodes)
 	if err != nil {
 		return err

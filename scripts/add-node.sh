@@ -8,9 +8,7 @@ set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 打印给运维的那条一键安装命令要用到这两个。
 REPO="TGBUG/SimpleProbe"
-CONF_DIR="/etc/probe"
 
 BIN=""
 NODES=""
@@ -23,14 +21,17 @@ INTERVAL="30s"
 usage() {
   cat <<'EOF'
 用法：
-  add-node.sh --nodes <nodes.yaml> --id <节点 id> [选项]
+  add-node.sh --id <节点 id> [选项]
 
 选项：
+  --nodes <nodes.yaml> 配置文件；默认 /etc/probe/nodes.yaml
+                       （安装时用 --conf-dir 改了路径的话，用这个指过去）
   --name <显示名>      默认与 id 相同
-  --server-url <URL>   写进生成的 agent 配置；默认从 nodes.yaml 的 listen 推断
+  --server-url <URL>   写进打印出来的 agent 安装命令；默认从 nodes.yaml 的
+                       listen 推断，推断出来是回环地址时会提示你手填
   --interval <时长>    上报间隔，如 30s / 5m；合法范围 5s ~ 1h（默认 30s）
   --out <目录>         生成的 agent 配置放哪；默认与 nodes.yaml 同目录
-  --bin <路径>         server 二进制路径；默认 <仓库>/bin/server
+  --bin <路径>         server 二进制路径；默认 <脚本目录>/../bin/server
   -h, --help
 EOF
 }
@@ -49,14 +50,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$NODES" || -z "$ID" ]]; then
+# 默认值对齐一键安装的布局：配置在 /etc/probe/nodes.yaml，
+# server 二进制在 /opt/probe/bin/server。注意 --bin 的默认值是
+# $SELF_DIR/../bin/server，所以脚本被装到 /opt/probe/bin/add-node.sh 时
+# 不需要任何参数就能跑。
+NODES="${NODES:-/etc/probe/nodes.yaml}"
+
+if [[ -z "$ID" ]]; then
   usage >&2
   exit 2
 fi
-[[ -f "$NODES" ]] || { echo "找不到配置文件：$NODES" >&2; exit 1; }
+[[ -f "$NODES" ]] || { echo "找不到配置文件：$NODES（用 --nodes 指定，或先跑一键安装）" >&2; exit 1; }
 
 BIN="${BIN:-$SELF_DIR/../bin/server}"
 [[ -x "$BIN" ]] || { echo "找不到可执行的 server：$BIN（先 make build，或用 --bin 指定）" >&2; exit 1; }
+
+# 配置目录跟随 --nodes 的位置：一键安装可以用 --conf-dir 改路径，
+# 这里跟着走，后面提到 agent 配置文件该放哪时才不会说错。
+CONF_DIR="$(cd "$(dirname "$NODES")" && pwd)"
 
 NAME="${NAME:-$ID}"
 OUT_DIR="${OUT_DIR:-$(dirname "$NODES")}"
@@ -84,6 +95,18 @@ TOKEN="$(openssl rand -hex 32)"
 BACKUP="$NODES.bak.$(date +%Y%m%d%H%M%S)"
 cp -p "$NODES" "$BACKUP"
 
+# 这个脚本的加节点方式是「往文件末尾追加一个列表项」，所以文件末尾必须是
+# 裸的 `nodes:`。如果写的是 `nodes: []`（v0.4.x 的 install.sh 就是这么写的），
+# 追加会得到非法 YAML：
+#     nodes: []
+#       - id: web01        ← yaml: did not find expected key
+# 所以先把它改写成裸的 `nodes:`。改写在备份之后，校验失败回滚时恢复的是
+# 用户原始的文件。
+if grep -qE '^[[:space:]]*nodes:[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$NODES"; then
+  sed -i -E 's|^([[:space:]]*nodes:)[[:space:]]*\[[[:space:]]*\][[:space:]]*$|\1|' "$NODES"
+  echo "  提示：把配置里的 'nodes: []' 改写成了 'nodes:'（追加列表项需要这种形式）" >&2
+fi
+
 printf '  - id: %s\n    display_name: "%s"\n    token: "%s"\n' "$ID" "$NAME" "$TOKEN" >>"$NODES"
 
 # 用 server 自己的解析器做校验——它才是规则的唯一权威。
@@ -99,12 +122,26 @@ fi
 rm -f "$OUT_DIR/.add-node.err"
 
 # 没给 server-url 就从 nodes.yaml 的 listen 推断。
+NEED_MANUAL_URL=0
 if [[ -z "$SERVER_URL" ]]; then
   listen="$(awk -F'listen:' '/^[[:space:]]*listen:/{gsub(/["[:space:]]/, "", $2); print $2; exit}' "$NODES")"
   listen="${listen:-127.0.0.1:8080}"
-  # agent 多数情况下与 server 不同机，0.0.0.0 对它是无意义的地址。
-  listen="${listen/0.0.0.0/127.0.0.1}"
-  SERVER_URL="http://$listen"
+  host="${listen%:*}"
+  port="${listen##*:}"
+  case "$host" in
+    127.0.0.1 | localhost | ::1 | "[::1]")
+      # 默认配置就是只监听回环（公网入口交给反代或隧道）。但 agent 在别的机器上，
+      # 照搬这个地址会让它往自己身上发数据——**静默失败**，最难查。
+      # 所以这里必须提示手填，而不是自作聪明地给一个看起来能用的 URL。
+      host="<server 的可达地址>"
+      NEED_MANUAL_URL=1
+      ;;
+    0.0.0.0 | "::" | "[::]")
+      host="<server 的可达地址>"
+      NEED_MANUAL_URL=1
+      ;;
+  esac
+  SERVER_URL="http://$host:$port"
 fi
 
 AGENT_FILE="$OUT_DIR/agent-$ID.yaml"
@@ -119,21 +156,34 @@ mounts: ["/"]
 EOF
 chmod 600 "$AGENT_FILE"
 
+if ((NEED_MANUAL_URL)); then
+  cat <<EOF
+
+  注意：$NODES 里的 listen 是回环地址，agent 在另一台机器上连不到它。
+        下面命令里的 <server 的可达地址> 请替换成 IP 或域名——
+        如果 server 前面有反向代理，这里填对外那个 https:// 地址。
+
+EOF
+fi
+
 cat <<EOF
 
 已添加节点：$ID（$NAME）
 
   server 端（本机）：
-    systemctl reload probe-server        # 等价于 kill -HUP <pid>
+    systemctl reload simple-probe-server        # 等价于 kill -HUP <pid>
 
   agent 端（在 $ID 这台机器上执行，一条命令搞定）：
     curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh \\
-      | bash -s -- agent --server "$SERVER_URL" --node "$ID" --token "$TOKEN"
+      | sudo bash -s -- agent --server "$SERVER_URL" --node "$ID" --token "$TOKEN"
 
   上面那条命令会自己下载、校验、装二进制与 systemd 单元并启动。
-  不想走网络的话，也可以把这份配置拷过去手装：
+  不想走网络的话，这份配置可以拷过去手装：
 
-    $AGENT_FILE              （拷到目标机的 $CONF_DIR/agent.yaml）
+    $AGENT_FILE              →  目标机的 $CONF_DIR/agent.yaml
+
+  手装时注意权限：服务用的是 DynamicUser（临时 uid），配置得是 0644，
+  否则服务读不到。install.sh 会自动处理好，手装才需要自己 chmod。
 
   原配置备份：
     $BACKUP

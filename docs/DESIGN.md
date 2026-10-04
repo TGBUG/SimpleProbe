@@ -295,9 +295,9 @@ SimpleProbe/                  # module github.com/TGBUG/SimpleProbe
 │   └── uptime/               # 在线率计算（§4.2 公式）
 ├── web/                      # 零依赖前端（app.css / app.js / index.html / detail.html）
 ├── deploy/
-│   ├── probe-server.service
-│   ├── probe-agent.service
-│   ├── nodes.example.yaml    # 节点身份模板（真文件 0600，不进 Git）
+│   ├── simple-probe-server.service
+│   ├── simple-probe-agent.service
+│   ├── nodes.example.yaml    # 节点身份模板（真文件 0644，不进 Git）
 │   ├── agent.example.yaml
 │   ├── nginx.conf.example    # 反代示例（可选，等价示例见 Caddyfile.example）
 │   └── Caddyfile.example
@@ -427,6 +427,31 @@ make e2e                       # 新增验收段：用 release 包装进临时�
    热加载又要求服务能直接读配置路径（`LoadCredential` 给的是启动快照，reload
    会读到旧内容），因此**配置改为 `0644`**——同机任何用户可读那个明文 token。
    README 里给了想要更严时的静态用户替代方案。
+
+### v0.4 之后的三处修正
+
+装过一次之后才发现的问题，都记在这里，因为它们暴露的是**脚本之间的隐式耦合**：
+
+1. **服务名加 `simple-` 前缀**。`probe-server` 太通用，`systemctl stop probe-server`
+   容易误伤系统上别的同名服务。现在是 `simple-probe-server` / `simple-probe-agent`。
+   install.sh 会在安装时顺手停掉并删除旧的 `probe-*` 单元——否则两个服务抢同一个
+   端口，新的根本起不来。
+2. **安装参数里不再有 `--node`**。它只能加一个节点，装第二台机器还得改配置重装；
+   而 `add-node.sh` 可以反复用。相应地，`nodes` 为空成了**合法状态**（原先
+   `config.Normalize()` 直接报错，导致不带 `--node` 就装不上——一个参数同时是
+   "可选"和"必需"，本身就是设计味道）。现在空列表照常启动，只在日志里提醒一句。
+   `add-node.sh` 也必须随 server 包一起发，否则一键装完的机器上根本没有加节点的
+   工具——这是最初的遗漏。
+3. **`nodes:` 不能写成 `nodes: []`**（安装模板与 add-node.sh 的隐式契约）。
+   `add-node.sh` 的加节点方式是"往文件末尾追加列表项"，而 `nodes: []` 是流式序列，
+   后面跟块序列是非法 YAML。安装模板因此写成裸的 `nodes:`；`add-node.sh` 也会把
+   遇到的 `nodes: []` 自动改写成 `nodes:`，这样 v0.4.x 装出来的配置也能继续用。
+   **这类耦合没有类型系统兜底**，只能靠 e2e 覆盖——所以 e2e 里现在会真的装一遍、
+   加一个节点、再确认二进制能解析它。
+
+顺带修掉的：`add-node.sh` 原先会在 `listen` 是回环地址时自作聪明地推出
+`http://127.0.0.1:8080`，agent 在另一台机器上会往自己身上发数据——**静默失败**。
+现在这种情况明确提示手填，并打印一个占位符。
 
 **与原始规格的全部偏差**（累计）：
 1. 前端没有用 Vue3 + ECharts。v0.1~v0.4 用的是零依赖原生 JS + 自写 SVG 折线：
