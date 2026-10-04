@@ -64,7 +64,10 @@ func run() error {
 	}
 	defer func() { _ = st.Close() }()
 
-	handler := api.New(st, api.Options{Logger: logger}).Handler()
+	handler := api.New(st, api.Options{
+		Logger:          logger,
+		ReportPerMinute: cfg.ReportPerMinute,
+	}).Handler()
 	if *webDir != "" {
 		// 前端与 API 同源，省掉 CORS；生产上也可以让反向代理
 		// （nginx / Caddy / 任意）直接托管静态文件，这里就不用开 -web。
@@ -91,7 +94,8 @@ func run() error {
 	go purgeLoop(ctx, st, logger, *sampleTTL, *bucketTTL)
 
 	go func() {
-		logger.Info("server 启动", "listen", cfg.Listen, "db", cfg.DB, "nodes", len(cfg.Nodes))
+		logger.Info("server 启动", "listen", cfg.Listen, "db", cfg.DB,
+			"nodes", len(cfg.Nodes), "report_per_minute", cfg.ReportPerMinute)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("HTTP 服务异常退出", "err", err)
 			stop()

@@ -20,7 +20,9 @@ import (
 
 // Options 是 API 层的配置。
 type Options struct {
-	// ReportPerMinute 是单节点每分钟的上报次数上限，默认 10。
+	// ReportPerMinute 是单节点每分钟的上报次数上限。
+	// 由 server 配置里的 report_per_minute 提供；<=0 时退回 10
+	// （正常路径不会走到这个分支，config 一定会填上默认值）。
 	ReportPerMinute int
 	// Logger 留空则用 slog.Default()。
 	Logger *slog.Logger

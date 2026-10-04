@@ -157,12 +157,46 @@ func TestSend_RejectedDoesNotRetry(t *testing.T) {
 	}
 }
 
+// TestSend_DoesNotRetryRateLimited 钉住 429 不能重试。
+//
+// 限流窗口是整整一分钟，而单周期的重试在几秒内打完——那些重试不可能成功，
+// 还会继续消耗同一个计数器，把节点往坑里推得更深。曾经把 429 当成临时错误
+// 重试 3 次，等于自己把自己按在限流里。
+func TestSend_DoesNotRetryRateLimited(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"code":"rate_limited","message":"上报过于频繁"}`))
+	}))
+	defer srv.Close()
+
+	c := mustClient(t, Options{ServerURL: srv.URL, Node: "web01", Token: "t"})
+	err := c.Send(context.Background(), sampleReport())
+
+	var limited *RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("期望 RateLimitedError，得到 %v", err)
+	}
+	if limited.Message != "上报过于频繁" {
+		t.Errorf("应带上 server 给的原因，得到 %q", limited.Message)
+	}
+	// 也不能被误判成 RejectedError——那会让 agent 打日志说"配置错了"。
+	var rejected *RejectedError
+	if errors.As(err, &rejected) {
+		t.Errorf("限流不是拒绝: %v", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("429 不应重试，却请求了 %d 次", n)
+	}
+}
+
 func TestSend_RetriesTransient(t *testing.T) {
 	for _, status := range []int{
 		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
-		http.StatusTooManyRequests,
 	} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			var calls int32

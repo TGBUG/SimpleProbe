@@ -26,7 +26,9 @@ AGENT_PID=""
 AGENT2=""
 INST_SRV=""
 INST_AG=""
+LIM_SRV=""
 cleanup() {
+  [[ -n "$LIM_SRV" ]] && kill "$LIM_SRV" 2>/dev/null || true
   [[ -n "$INST_AG" ]] && kill "$INST_AG" 2>/dev/null || true
   [[ -n "$INST_SRV" ]] && kill "$INST_SRV" 2>/dev/null || true
   [[ -n "$AGENT2" ]] && kill "$AGENT2" 2>/dev/null || true
@@ -376,6 +378,55 @@ test -d "$INST/data" ||
 grep -q "$INST" "$WORK/uninstall.log" ||
   { echo "  卸载应当告诉运维文件还在哪，实际没提 $INST："; cat "$WORK/uninstall.log"; exit 1; }
 echo "  单元已移除；配置文件与数据原样保留，并提示了它们在哪"
+
+echo "== 限流：默认额度不该把合法的最快间隔误伤 =="
+# 协议允许 interval_s 最小 5s，也就是 12 次/分钟。默认额度一旦低于它，
+# 就会出现"server 接受一份它自己拒绝服务的配置"——曾经写死 10/分钟，
+# 于是任何 5s 的节点每分钟必然吃 429。这里走的是真实路径：
+# 配置文件 → main → api.Options → limiter。
+LIM_PORT=$((PORT + 2))
+cat >"$WORK/lim.yaml" <<EOF
+listen: "127.0.0.1:$LIM_PORT"
+db: "$WORK/lim.db"
+nodes:
+  - id: lim
+    token: t
+EOF
+"$WORK/bin/server" -config "$WORK/lim.yaml" >"$WORK/lim.log" 2>&1 &
+LIM_SRV=$!
+sleep 2
+
+grep -q 'report_per_minute=60' "$WORK/lim.log" ||
+  { echo "  启动日志应回显生效的额度："; cat "$WORK/lim.log"; exit 1; }
+
+python3 - "$LIM_PORT" <<'PY'
+import json, sys, urllib.error, urllib.request
+
+port = sys.argv[1]
+body = json.dumps({
+    "v": 1, "node": "lim", "interval_s": 5, "load": [1, 1, 1], "cpu_pct": 10,
+    "mem": {"used": 1, "total": 2}, "disk": [{"mount": "/", "used": 1, "total": 2}],
+    "uptime_s": 100, "agent_version": "e2e",
+}).encode()
+
+ok = 0
+for _ in range(24):  # 5s 的节点一分钟只有 12 次，这里连打 24 次
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/v1/report", data=body,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer t"})
+    try:
+        urllib.request.urlopen(req)
+        ok += 1
+    except urllib.error.HTTPError as e:
+        if e.code != 429:
+            raise
+print(f"  interval_s=5 连打 24 次，成功 {ok} 次")
+assert ok >= 12, "5s 间隔的节点被限流了——默认额度低于协议允许的最快频率"
+PY
+
+kill "$LIM_SRV" 2>/dev/null || true
+wait "$LIM_SRV" 2>/dev/null || true
+LIM_SRV=""
 
 echo
 echo "全部通过 ✅"

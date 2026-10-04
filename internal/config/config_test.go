@@ -84,6 +84,37 @@ func TestLoadServer_SinceRFC3339(t *testing.T) {
 	}
 }
 
+func TestLoadServer_ReportPerMinute(t *testing.T) {
+	// 留空用默认值。
+	cfg, err := LoadServer(writeConfig(t, "db: /tmp/x.db\nnodes:\n  - id: a\n    token: t\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReportPerMinute != DefaultReportPerMinute {
+		t.Errorf("默认 = %d，期望 %d", cfg.ReportPerMinute, DefaultReportPerMinute)
+	}
+
+	// 这个断言是这条配置项存在的理由：默认额度必须容得下**最坏合法情况**，
+	// 也就是协议允许的最快间隔，乘上 agent 单周期最多的尝试次数。
+	// 一旦低于它，就会出现"server 接受一份它自己拒绝服务的配置"——
+	// 曾经写死 10/分钟，于是任何 interval < 6s 的节点都会每分钟必然吃 429。
+	worst := (60 / protocol.MinIntervalS) * 3
+	if DefaultReportPerMinute < worst {
+		t.Errorf("默认额度 %d 低于最坏合法频率 %d，会有正常节点被无谓限流",
+			DefaultReportPerMinute, worst)
+	}
+
+	// 显式配置生效。
+	cfg, err = LoadServer(writeConfig(t,
+		"db: /tmp/x.db\nreport_per_minute: 120\nnodes:\n  - id: a\n    token: t\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReportPerMinute != 120 {
+		t.Errorf("显式配置 = %d，期望 120", cfg.ReportPerMinute)
+	}
+}
+
 func TestLoadServer_AllowsEmptyNodes(t *testing.T) {
 	// 空 nodes 不是配置错误，而是装完 server 之后、加第一个节点之前的正常状态。
 	// 曾经这里报错，导致 install.sh server 一装就在自检那步失败。
@@ -103,6 +134,8 @@ func TestLoadServer_Errors(t *testing.T) {
 		wantMsg string
 	}{
 		{name: "缺 db", content: "nodes:\n  - id: a\n    token: t\n", wantMsg: "db"},
+		{name: "report_per_minute 为负", content: "db: /tmp/x.db\nreport_per_minute: -1\n", wantMsg: "report_per_minute"},
+		{name: "report_per_minute 过大", content: "db: /tmp/x.db\nreport_per_minute: 100001\n", wantMsg: "report_per_minute"},
 		{name: "节点缺 id", content: "db: /tmp/x.db\nnodes:\n  - token: t\n", wantMsg: "id"},
 		{name: "节点 id 非法字符", content: "db: /tmp/x.db\nnodes:\n  - id: \"a b\"\n    token: t\n", wantMsg: "id"},
 		{name: "节点 id 重复", content: "db: /tmp/x.db\nnodes:\n  - id: a\n    token: t\n  - id: a\n    token: u\n", wantMsg: "重复"},

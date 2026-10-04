@@ -378,6 +378,10 @@ if [[ "$MODE" == "server" ]]; then
 #
 # 加节点：$DIR/bin/add-node.sh --id <节点 id> --name "<显示名>"
 # 加完不用重启：systemctl reload simple-probe-server
+#
+# 单节点每分钟上报次数上限，默认 60。它拦的是失控的死循环，不是访问控制；
+# 调小到低于 (60/interval)*3 会让正常节点也被限流。
+# report_per_minute: 60
 listen: "$LISTEN"
 db: "$DIR/data/probe.db"
 

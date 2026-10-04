@@ -1,8 +1,9 @@
 // Package push 把上报载荷送到 server，并区分“该重试”与“不该重试”的错误。
 //
 // 分类规则来自规格 §4.7：
-//   - 网络错误 / 5xx / 429 → 暂时性问题，指数退避重试；
-//   - 4xx → server 明确拒绝，重试一万次结果也一样，必须立刻上报给运维。
+//   - 网络错误 / 5xx → 暂时性问题，指数退避重试；
+//   - 429 限流 → **不重试**，当轮放弃（理由见 RateLimitedError）；
+//   - 其余 4xx → server 明确拒绝，重试一万次结果也一样，必须立刻上报给运维。
 package push
 
 import (
@@ -34,6 +35,26 @@ func (e *RejectedError) Error() string {
 		return fmt.Sprintf("server 拒绝上报（HTTP %d, %s）：%s", e.Status, e.Code, e.Message)
 	}
 	return fmt.Sprintf("server 拒绝上报（HTTP %d）：%s", e.Status, e.Message)
+}
+
+// RateLimitedError 表示 server 因为超过频率上限而拒绝了这次上报（HTTP 429）。
+//
+// 它和 RejectedError 一样不该重试，但原因完全不同：载荷本身没问题，只是这个
+// 时间窗口的额度用完了。
+//
+// **为什么不能重试**：限流窗口是整整一分钟，而单周期的重试是在几秒内打完的——
+// 那些重试不可能成功，反而会继续消耗同一个计数器，把节点往坑里推得更深。
+// 更糟的是它会自我维持：额度一满，每次重试都让它更满。
+// 下一个上报周期本来就会重来，那时窗口已经滚动，所以当轮直接放弃。
+type RateLimitedError struct {
+	Message string
+}
+
+func (e *RateLimitedError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("被 server 限流（HTTP 429）：%s", e.Message)
+	}
+	return "被 server 限流（HTTP 429）"
 }
 
 // Options 是上报客户端的配置。
@@ -128,6 +149,11 @@ func (c *Client) Send(ctx context.Context, rep *protocol.Report) error {
 			// 4xx：重试没有意义，立刻向上报。
 			return lastErr
 		}
+		var limited *RateLimitedError
+		if errors.As(lastErr, &limited) {
+			// 429：窗口没滚之前重试不可能成功，还会继续消耗额度。
+			return lastErr
+		}
 	}
 	return fmt.Errorf("上报失败，已尝试 %d 次: %w", c.opts.Attempts, lastErr)
 }
@@ -154,7 +180,9 @@ func (c *Client) once(ctx context.Context, body []byte) error {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return nil
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return errors.New("被 server 限流（HTTP 429）")
+		var e protocol.ErrorResponse
+		_ = json.Unmarshal(payload, &e)
+		return &RateLimitedError{Message: e.Message}
 	case resp.StatusCode >= 500:
 		return fmt.Errorf("server 内部错误（HTTP %d）", resp.StatusCode)
 	default:
