@@ -119,8 +119,26 @@ if [[ "$MODE" == "agent" ]]; then
   [[ "$INTERVAL" =~ ^[0-9]+(s|m|h)$ ]] || die "--interval 形如 30s / 5m / 1h：$INTERVAL"
 fi
 
-if ((DRY_RUN == 0)) && [[ $EUID -ne 0 ]]; then
-  die "需要 root（要写 $PREFIX、$CONF_DIR 和 systemd 单元）。只是看看的话加 --dry-run。"
+# 需要的不是 root 这个身份，而是"能写到目标位置"——所以按可写性判断，
+# 而不是按 EUID。真正只有 root 才能做的，是装 systemd 单元。
+#
+# 这条是被 CI 逼出来的：本地开发沙箱是 root，GitHub runner 不是，同一段脚本
+# 在两边行为不同（本地全绿、CI 直接 die）。改判可写性之后，CI 的非 root 环境
+# 反而成了这段逻辑的回归哨兵。
+can_write() {
+  local d="$1"
+  while [[ ! -e "$d" && "$d" != "/" ]]; do d="$(dirname "$d")"; done
+  [[ -w "$d" ]]
+}
+
+if ((DRY_RUN == 0)); then
+  if ((NO_SYSTEMD == 1)) && can_write "$PREFIX" && can_write "$CONF_DIR"; then
+    : # 只装文件、目标可写，谁跑都行
+  elif [[ $EUID -ne 0 ]]; then
+    die "需要 root：要么要装 systemd 单元，要么 $PREFIX / $CONF_DIR 对当前用户不可写。
+      · 只看计划：     加 --dry-run
+      · 无 root 安装： 加 --no-systemd，并把 --prefix 与 --conf-dir 指到可写目录"
+  fi
 fi
 
 # ---- 识别架构 ----
