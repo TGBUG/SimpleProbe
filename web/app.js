@@ -16,6 +16,13 @@ const Probe = (function () {
     return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + units[i];
   }
 
+  // formatBps 格式化“字节/秒”。0 也要显示成 "0 B/s"——
+  // 网络空闲是有效信息，不是缺数据。
+  function formatBps(n) {
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return "—";
+    return formatBytes(n) + "/s";
+  }
+
   function formatUptime(sec) {
     if (!Number.isFinite(sec) || sec <= 0) return "—";
     const d = Math.floor(sec / 86400);
@@ -92,6 +99,7 @@ const Probe = (function () {
   return {
     REFRESH_MS: REFRESH_MS,
     formatBytes: formatBytes,
+    formatBps: formatBps,
     formatUptime: formatUptime,
     formatRate: formatRate,
     pct: pct,

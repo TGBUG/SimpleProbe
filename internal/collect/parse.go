@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/TGBUG/SimpleProbe/internal/protocol"
 )
@@ -201,4 +202,85 @@ func ParseUptime(content string) (int64, error) {
 		return 0, errors.New("collect: /proc/uptime 为负数")
 	}
 	return secs, nil
+}
+
+// NetCounters 是所有非回环网卡累计字节数的合计。
+type NetCounters struct {
+	RxBytes uint64
+	TxBytes uint64
+}
+
+// ParseNetDev 解析 /proc/net/dev，求和非回环网卡的收发字节。
+//
+// 排除 lo 是刻意的：本机进程间通信全走它，算进去会让“这台机器用了多少流量”
+// 失去意义——一台只在本机内部聊天的机器看起来会比实际忙得多。
+//
+// 这是**网卡视角的合计**，不等于“实际外网流量”：跑容器时网桥（docker0、br-*）
+// 与 veth 会把同一份流量重复计入。这是“对非回环网卡求和”这个定义的固有结果，
+// 换来的是不必去猜哪块网卡才是“真的”。
+func ParseNetDev(content string) (NetCounters, error) {
+	var sum NetCounters
+	sawInterface := false
+
+	for _, line := range strings.Split(content, "\n") {
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok {
+			// 两行表头没有冒号。
+			continue
+		}
+		name = strings.TrimSpace(name)
+		// 表头第二行会被 Cut 出 "  face |bytes    packets ..." 这种左半边，
+		// 里面有空格与竖线，用字符集挡掉。
+		if name == "" || strings.ContainsAny(name, " |") {
+			continue
+		}
+
+		// 字段顺序：rx bytes, rx packets, ...（共 8 列）, tx bytes, tx packets, ...
+		// 所以收字节在第 0 列、发字节在第 8 列。
+		fields := strings.Fields(rest)
+		if len(fields) < 9 {
+			return NetCounters{}, fmt.Errorf("collect: /proc/net/dev 的 %s 只有 %d 列", name, len(fields))
+		}
+		rx, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			return NetCounters{}, fmt.Errorf("collect: %s 的收字节数无法解析: %w", name, err)
+		}
+		tx, err := strconv.ParseUint(fields[8], 10, 64)
+		if err != nil {
+			return NetCounters{}, fmt.Errorf("collect: %s 的发字节数无法解析: %w", name, err)
+		}
+		sawInterface = true
+
+		if name == "lo" {
+			continue
+		}
+		sum.RxBytes += rx
+		sum.TxBytes += tx
+	}
+
+	if !sawInterface {
+		// 一块网卡都没解析出来说明文件本身不对，而不是“没有流量”。
+		// 只有 lo 的容器是正常情况，那时 sawInterface 已经是 true 了。
+		return NetCounters{}, errors.New("collect: /proc/net/dev 里没有任何网卡")
+	}
+	return sum, nil
+}
+
+// NetRate 由两次计数算出速率（字节/秒）。
+//
+// 计数器**会倒退**：网卡被 down/up、驱动重载、或者 32 位计数器回绕。这时差值
+// 没有意义，夹成 0 而不是给出一个负数或者天文数字——一次网卡重启不该在流量图上
+// 戳出一根几十 GB/s 的针。
+func NetRate(prev, cur NetCounters, elapsed time.Duration) (rxBps, txBps float64) {
+	if elapsed <= 0 {
+		return 0, 0
+	}
+	secs := elapsed.Seconds()
+	if cur.RxBytes >= prev.RxBytes {
+		rxBps = float64(cur.RxBytes-prev.RxBytes) / secs
+	}
+	if cur.TxBytes >= prev.TxBytes {
+		txBps = float64(cur.TxBytes-prev.TxBytes) / secs
+	}
+	return rxBps, txBps
 }

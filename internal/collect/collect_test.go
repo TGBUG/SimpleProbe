@@ -33,6 +33,24 @@ func statLine(v ...uint64) string {
 	return strings.Join(parts, " ")
 }
 
+// netDevHeader 是 /proc/net/dev 固定不变的两行表头。
+const netDevHeader = "Inter-|   Receive                                                |  Transmit\n" +
+	" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+
+// netDevLine 拼一行 /proc/net/dev。只填收发字节，其余 14 列补 0。
+func netDevLine(name string, rx, tx uint64) string {
+	zeros := func() []string {
+		out := make([]string, 0, 8)
+		for i := 0; i < 7; i++ {
+			out = append(out, "0")
+		}
+		return out
+	}
+	recv := append([]string{strconv.FormatUint(rx, 10)}, zeros()...)
+	send := append([]string{strconv.FormatUint(tx, 10)}, zeros()...)
+	return name + ": " + strings.Join(recv, " ") + " " + strings.Join(send, " ")
+}
+
 func newTestCollector(t *testing.T, now *time.Time) (*Collector, fakeFS) {
 	t.Helper()
 	files := fakeFS{
@@ -40,6 +58,9 @@ func newTestCollector(t *testing.T, now *time.Time) (*Collector, fakeFS) {
 		"/proc/loadavg": "0.42 0.55 0.61 1/234 5678\n",
 		"/proc/meminfo": "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n",
 		"/proc/uptime":  "1234567.89 9876543.21\n",
+		"/proc/net/dev": netDevHeader +
+			netDevLine("lo", 1000, 1000) + "\n" +
+			netDevLine("eth0", 5000, 3000) + "\n",
 	}
 	c := New(30*time.Second, []string{"/", "/data"})
 	c.readFile = files.read
@@ -68,6 +89,10 @@ func TestCollector_WarmupThenSample(t *testing.T) {
 	// 30 秒后：总时间 1000 → 2000，空闲 800 → 1600，即 20% 使用率。
 	now = now.Add(30 * time.Second)
 	files["/proc/stat"] = statLine(200, 0, 200, 1600, 0, 0, 0, 0)
+	// lo 故意暴涨，用来证明它被排除在合计之外。
+	files["/proc/net/dev"] = netDevHeader +
+		netDevLine("lo", 999_999_999, 999_999_999) + "\n" +
+		netDevLine("eth0", 8000, 3600) + "\n"
 
 	m, err := c.Sample()
 	if err != nil {
@@ -97,6 +122,20 @@ func TestCollector_WarmupThenSample(t *testing.T) {
 	}
 	if want := (protocol.Disk{Mount: "/data", Used: 25, Total: 200}); m.Disk[1] != want {
 		t.Errorf("disk[1] = %+v，期望 %+v", m.Disk[1], want)
+	}
+
+	// 网络：eth0 收 5000→8000、发 3000→3600，30 秒，即 100 与 20 字节/秒。
+	// 同时把 lo 的计数拉到天文数字——它必须被完全忽略，否则这两个断言会飞掉。
+	if math.Abs(m.Net.RxBps-100) > 1e-9 {
+		t.Errorf("Net.RxBps = %v，期望 100（lo 的增量必须被排除）", m.Net.RxBps)
+	}
+	if math.Abs(m.Net.TxBps-20) > 1e-9 {
+		t.Errorf("Net.TxBps = %v，期望 20", m.Net.TxBps)
+	}
+	// 累计值取本次计数器原值，同样只算非回环网卡。
+	if m.Net.RxTotal != 8000 || m.Net.TxTotal != 3600 {
+		t.Errorf("Net 累计 = rx %d / tx %d，期望 8000 / 3600",
+			m.Net.RxTotal, m.Net.TxTotal)
 	}
 }
 
@@ -150,6 +189,7 @@ func TestCollector_ReadFailures(t *testing.T) {
 		{name: "缺 /proc/loadavg", drop: "/proc/loadavg", wantErr: "/proc/loadavg"},
 		{name: "缺 /proc/meminfo", drop: "/proc/meminfo", wantErr: "/proc/meminfo"},
 		{name: "缺 /proc/uptime", drop: "/proc/uptime", wantErr: "/proc/uptime"},
+		{name: "缺 /proc/net/dev", drop: "/proc/net/dev", wantErr: "/proc/net/dev"},
 	}
 
 	for _, tt := range tests {

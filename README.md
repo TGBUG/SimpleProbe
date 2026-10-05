@@ -68,7 +68,8 @@ server 里**不存在任何向 agent 下发指令的代码路径**。面板即�
 | GET | `/api/v1/series` | 公开 | 曲线，参数 `node` / `metric` / `from` / `to` / `step` |
 | GET | `/api/v1/health` | 公开 | 自检 |
 
-可用指标：`cpu_pct`、`mem_pct`、`load1`、`load5`、`load15`（`mem_pct` 由查询时算出）。
+可用指标：`cpu_pct`、`mem_pct`、`load1`、`load5`、`load15`、`net_rx`、`net_tx`
+（`mem_pct` 由查询时算出，`net_rx` / `net_tx` 是**字节/秒**）。
 
 字段语义、`null` 与 `[]` 的区别、折线为什么要断开、错误码表——都在
 **[docs/API.md](docs/API.md)**。
@@ -221,6 +222,7 @@ agent 单周期最多 3 次尝试是 36 次/分钟。阈值一旦低于这个数
 - ✅ v0.3 部署件 + 前端收口（概览条、区间极值、主题契约）
 - ✅ v0.4 Release 工作流（三平台静态二进制 + SHA256SUMS）+ 一键安装脚本 + 去掉建账户步骤
 - ✅ v0.5 单目录布局（`--dir`，默认当前目录）+ 运行身份改为目录属主（配置回到 0600）+ `uninstall`
+- ✅ v0.6 网络流量：上下行速率进曲线，开机以来累计只做当前值
 - ⏳ 候选：离线 webhook 告警
 
 `make e2e` 覆盖的验收：真实 `/proc` 数据落库、停掉 agent 后在线率确实下降、

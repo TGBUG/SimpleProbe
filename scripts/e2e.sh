@@ -185,6 +185,40 @@ curl -sS -o /dev/null -w "  未知指标 => HTTP %{http_code}\n" \
 curl -sS -o /dev/null -w "  未知节点 => HTTP %{http_code}\n" \
   "http://127.0.0.1:$PORT/api/v1/series?node=ghost"
 
+echo "== 网络流量 =="
+# 上下行速率进曲线、开机累计只进快照——两条路径都要通。
+curl -fsS "http://127.0.0.1:$PORT/api/v1/series?node=local&metric=net_rx&from=$FROM&to=$TO&step=5" \
+  -o "$WORK/series-net.json"
+python3 - "$WORK/series-net.json" <<'PY'
+import json, sys
+
+d = json.load(open(sys.argv[1]))
+print("  net_rx 点数:", len(d["points"]), " 首点:", d["points"][0] if d["points"] else None)
+assert d["points"], "流量曲线不应为空——agent 已经上报了 net"
+for _, v in d["points"]:
+    assert v >= 0, f"速率不能为负: {v}"
+PY
+
+curl -fsS "http://127.0.0.1:$PORT/api/v1/nodes" -o "$WORK/nodes-net.json"
+python3 - "$WORK/nodes-net.json" <<'PY'
+import json, sys
+
+d = json.load(open(sys.argv[1]))
+n = [x for x in d["nodes"] if x["id"] == "local"][0]
+net = n["metrics"]["net"]
+print("  net 快照: 速率 ↓%.1f ↑%.1f B/s · 累计 ↓%.1f ↑%.1f MB"
+      % (net["rx"], net["tx"], net["rx_total"] / 1048576, net["tx_total"] / 1048576))
+
+assert set(net) == {"rx", "tx", "rx_total", "tx_total"}, f"字段不齐: {sorted(net)}"
+assert net["rx"] >= 0 and net["tx"] >= 0, "速率不能为负"
+# 累计值是“开机以来”，CI 机器跑过不少网络 IO，不可能是 0；
+# 也不该是荒唐的大数——1 PiB 足够宽松，又能挡住单位写错。
+assert net["rx_total"] > 0, "累计收字节数不应为 0"
+assert net["rx_total"] < 1 << 50, f"累计值大得不像话: {net['rx_total']}"
+# 累计量必须是整数：它表示精确字节数。用浮点存的话，几十 TB 之后低位就开始丢。
+assert all(isinstance(net[k], int) for k in ("rx_total", "tx_total")), "累计值应是整数"
+PY
+
 echo "== 加一台新机：改配置 + SIGHUP + 装 agent =="
 "$ROOT/scripts/add-node.sh" \
   --nodes "$WORK/nodes.yaml" --id nas --name "NAS · 家里" --interval 5s \

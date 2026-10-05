@@ -35,6 +35,7 @@ var schemaStatements = []string{
 		load1 REAL, load5 REAL, load15 REAL,
 		cpu_pct REAL,
 		mem_used INTEGER, mem_total INTEGER,
+		net_rx REAL, net_tx REAL,
 		uptime_s INTEGER,
 		PRIMARY KEY (node_id, ts)
 	) WITHOUT ROWID`,
@@ -45,6 +46,18 @@ var schemaStatements = []string{
 		reports INTEGER NOT NULL,
 		PRIMARY KEY (node_id, minute)
 	) WITHOUT ROWID`,
+}
+
+// migrations 给**已经建好的**表补列。
+//
+// CREATE TABLE IF NOT EXISTS 对已存在的表什么都不做，所以新增字段必须显式
+// ALTER——否则老库升级上来，要一直写到那一列才会报 "no such column"，
+// 而且是在生产里才炸。每条都按“列已在就跳过”写，可以反复执行。
+//
+// SQLite 的 ADD COLUMN 是常数时间操作，不重写数据。
+var migrations = []struct{ Table, Column, Decl string }{
+	{"sample", "net_rx", "REAL"},
+	{"sample", "net_tx", "REAL"},
 }
 
 // Store 是并发安全的。
@@ -89,6 +102,32 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("建表（第 %d 条）: %w", i+1, err)
 		}
+	}
+	for _, m := range migrations {
+		if err := s.addColumnIfMissing(m.Table, m.Column, m.Decl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addColumnIfMissing 幂等地给表补一列。
+//
+// 用 QueryRow 取 COUNT 而不是遍历 pragma 的结果集：连接池被限制成 1 条连接
+// （见 Open），遍历到一半再去 Exec 会自己把自己锁死。
+func (s *Store) addColumnIfMissing(table, column, decl string) error {
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
+	).Scan(&n); err != nil {
+		return fmt.Errorf("检查 %s.%s 是否存在: %w", table, column, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	// 表名与列名来自上面那张常量表，不是外部输入，不构成注入面。
+	if _, err := s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl)); err != nil {
+		return fmt.Errorf("给 %s 补列 %s: %w", table, column, err)
 	}
 	return nil
 }
@@ -139,15 +178,22 @@ func (s *Store) Record(rep *protocol.Report, at time.Time) error {
 	// 提交成功之后 Rollback 是 no-op，所以这里不需要区分成功失败。
 	defer func() { _ = tx.Rollback() }()
 
+	// net 可能缺省（老 agent 还没升级）。这时两列写 NULL——曲线里表现为
+	// "这段没数据"，而不是"流量为 0"，两者在图上完全不同。
+	var netRx, netTx any
+	if nv, ok := rep.NetValues(); ok {
+		netRx, netTx = nv.RxBps, nv.TxBps
+	}
+
 	// 同一秒内的重复上报（agent 超时重试、但 server 其实已经处理过）直接忽略，
 	// 明细里不会出现重复点。
 	if _, err := tx.Exec(`
-		INSERT INTO sample(node_id, ts, load1, load5, load15, cpu_pct, mem_used, mem_total, uptime_s)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sample(node_id, ts, load1, load5, load15, cpu_pct, mem_used, mem_total, net_rx, net_tx, uptime_s)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(node_id, ts) DO NOTHING`,
 		rep.Node, ts,
 		rep.Load[0], rep.Load[1], rep.Load[2], rep.CPUPct,
-		int64(rep.Mem.Used), int64(rep.Mem.Total), rep.UptimeS,
+		int64(rep.Mem.Used), int64(rep.Mem.Total), netRx, netTx, rep.UptimeS,
 	); err != nil {
 		return fmt.Errorf("写入明细: %w", err)
 	}

@@ -11,10 +11,12 @@ import (
 
 // Metrics 是采集到的本机指标。不含节点身份与上报间隔——那些来自 agent 配置。
 type Metrics struct {
-	Load    []float64
-	CPUPct  float64
-	Mem     protocol.Mem
-	Disk    []protocol.Disk
+	Load   []float64
+	CPUPct float64
+	Mem    protocol.Mem
+	Disk   []protocol.Disk
+	// Net 同时带速率（差分算得）与累计（网卡计数器原值）。
+	Net     protocol.NetValues
 	UptimeS int64
 }
 
@@ -31,6 +33,7 @@ type Collector struct {
 	now      func() time.Time
 
 	prevStat *CPUStat
+	prevNet  *NetCounters
 	prevAt   time.Time
 }
 
@@ -67,15 +70,22 @@ func (c *Collector) Sample() (Metrics, error) {
 	if err != nil {
 		return Metrics{}, err
 	}
+	curNet, err := c.readNet()
+	if err != nil {
+		return Metrics{}, err
+	}
 
 	// 无论本轮是否可用，cur 都是当前最新的基线，先换上再说。
 	prev, prevAt := c.prevStat, c.prevAt
+	prevNet := c.prevNet
 	c.prevStat, c.prevAt = &cur, now
+	c.prevNet = &curNet
 
-	if prev == nil {
-		return Metrics{}, fmt.Errorf("%w: 尚无 CPU 基线", ErrWarmup)
+	if prev == nil || prevNet == nil {
+		return Metrics{}, fmt.Errorf("%w: 尚无 CPU/网络基线", ErrWarmup)
 	}
-	if elapsed := now.Sub(prevAt); elapsed > maxIntervalFactor*c.interval {
+	elapsed := now.Sub(prevAt)
+	if elapsed > maxIntervalFactor*c.interval {
 		return Metrics{}, fmt.Errorf("%w: 距上次采样 %v，超过 %v",
 			ErrWarmup, elapsed.Round(time.Millisecond), maxIntervalFactor*c.interval)
 	}
@@ -84,6 +94,8 @@ func (c *Collector) Sample() (Metrics, error) {
 	if err != nil {
 		return Metrics{}, err
 	}
+	// 与 CPU 同一个 elapsed：两者都是差分，用两个时间源只会引入不一致。
+	rxBps, txBps := NetRate(*prevNet, curNet, elapsed)
 
 	load, err := c.readLoad()
 	if err != nil {
@@ -103,10 +115,15 @@ func (c *Collector) Sample() (Metrics, error) {
 	}
 
 	return Metrics{
-		Load:    load,
-		CPUPct:  cpuPct,
-		Mem:     mem,
-		Disk:    disk,
+		Load:   load,
+		CPUPct: cpuPct,
+		Mem:    mem,
+		Disk:   disk,
+		Net: protocol.NetValues{
+			RxBps: rxBps, TxBps: txBps,
+			// 累计值直接取本次读到的计数器——它是“开机以来”，不是差值。
+			RxTotal: curNet.RxBytes, TxTotal: curNet.TxBytes,
+		},
 		UptimeS: uptime,
 	}, nil
 }
@@ -133,6 +150,14 @@ func (c *Collector) readMem() (protocol.Mem, error) {
 		return protocol.Mem{}, fmt.Errorf("读取 /proc/meminfo: %w", err)
 	}
 	return ParseMeminfo(string(b))
+}
+
+func (c *Collector) readNet() (NetCounters, error) {
+	b, err := c.readFile("/proc/net/dev")
+	if err != nil {
+		return NetCounters{}, fmt.Errorf("读取 /proc/net/dev: %w", err)
+	}
+	return ParseNetDev(string(b))
 }
 
 func (c *Collector) readUptime() (int64, error) {

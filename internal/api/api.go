@@ -170,6 +170,16 @@ type MetricsView struct {
 	Disk         []DiskView `json:"disk"`
 	UptimeS      int64      `json:"uptime_s"`
 	AgentVersion string     `json:"agent_version"`
+	// Net 为 null 表示这个节点还没上报过流量（agent 尚未升级，或从未上报）。
+	Net *NetView `json:"net"`
+}
+
+// NetView 是网络流量。rx/tx 是速率，rx_total/tx_total 是开机以来的累计。
+type NetView struct {
+	RxBps   float64 `json:"rx"`
+	TxBps   float64 `json:"tx"`
+	RxTotal uint64  `json:"rx_total"`
+	TxTotal uint64  `json:"tx_total"`
 }
 
 type MemView struct {
@@ -234,7 +244,7 @@ func metricsView(rep *protocol.Report) *MetricsView {
 	load := make([]float64, len(rep.Load))
 	copy(load, rep.Load)
 
-	return &MetricsView{
+	v := &MetricsView{
 		Load:         load,
 		CPUPct:       rep.CPUPct,
 		Mem:          MemView{Used: rep.Mem.Used, Total: rep.Mem.Total},
@@ -242,6 +252,13 @@ func metricsView(rep *protocol.Report) *MetricsView {
 		UptimeS:      rep.UptimeS,
 		AgentVersion: rep.AgentVersion,
 	}
+	if nv, ok := rep.NetValues(); ok {
+		v.Net = &NetView{
+			RxBps: nv.RxBps, TxBps: nv.TxBps,
+			RxTotal: nv.RxTotal, TxTotal: nv.TxTotal,
+		}
+	}
+	return v
 }
 
 // ---------- 自检 ----------

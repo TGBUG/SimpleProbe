@@ -54,7 +54,14 @@ function renderCard(n) {
       Probe.row("负载", m.load.map(function (x) { return x.toFixed(2); }).join(" / ")) +
       Probe.row("CPU", m.cpu_pct.toFixed(1) + "%") + Probe.bar(m.cpu_pct) +
       Probe.row("内存", Probe.formatBytes(m.mem.used) + " / " + Probe.formatBytes(m.mem.total) + " · " + memPct.toFixed(0) + "%") +
-      Probe.bar(memPct) + disks;
+      Probe.bar(memPct) + disks +
+      // net 为 null 表示这个 agent 还没升级到会上报流量的版本。
+      // 这时整行不显示，而不是显示一排“—”，免得把卡片塞满噪音。
+      (m.net
+        ? Probe.row("网络",
+            "↓ " + Probe.formatBps(m.net.rx) + " · ↑ " + Probe.formatBps(m.net.tx) +
+            ' · 累计 ' + Probe.formatBytes(m.net.rx_total + m.net.tx_total))
+        : "");
   }
 
   const r = n.uptime || {};

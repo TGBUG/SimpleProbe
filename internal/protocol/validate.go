@@ -111,6 +111,27 @@ func (r *Report) Validate() error {
 		}
 	}
 
+	// net 整体可缺省（老 agent 不发），但只要出现就必须四个字段齐全——
+	// 不能出现"有 rx 没 tx"这种半份数据。
+	if n := r.Net; n != nil {
+		switch {
+		case n.RxBps == nil:
+			return invalid("net.rx", "net 出现时不能缺省")
+		case n.TxBps == nil:
+			return invalid("net.tx", "net 出现时不能缺省")
+		case n.RxTotal == nil:
+			return invalid("net.rx_total", "net 出现时不能缺省")
+		case n.TxTotal == nil:
+			return invalid("net.tx_total", "net 出现时不能缺省")
+		}
+		if !finite(*n.RxBps) || *n.RxBps < 0 {
+			return invalid("net.rx", "必须是有限的非负数（字节/秒），收到 %v", *n.RxBps)
+		}
+		if !finite(*n.TxBps) || *n.TxBps < 0 {
+			return invalid("net.tx", "必须是有限的非负数（字节/秒），收到 %v", *n.TxBps)
+		}
+	}
+
 	if r.UptimeS < 0 {
 		return invalid("uptime_s", "不能为负数，收到 %d", r.UptimeS)
 	}

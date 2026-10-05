@@ -38,8 +38,13 @@ func TestChooseStep(t *testing.T) {
 	}
 }
 
+// TestMetrics_OrderStable 钉住指标清单与顺序。
+//
+// 顺序不是随便定的：它同时也是文档顺序与错误信息里列出的顺序，改了会直接影响
+// 「未知指标；可选：…」那行提示。新增指标时这里和 docs/API.md 都要改——
+// 后者由 api 包的 TestDocs_ListsEveryMetric 盯着。
 func TestMetrics_OrderStable(t *testing.T) {
-	want := []string{"cpu_pct", "mem_pct", "load1", "load5", "load15"}
+	want := []string{"cpu_pct", "mem_pct", "load1", "load5", "load15", "net_rx", "net_tx"}
 	got := Metrics()
 	if len(got) != len(want) {
 		t.Fatalf("指标数 = %d，期望 %d", len(got), len(want))

@@ -298,3 +298,94 @@ func TestDerivedValues(t *testing.T) {
 		t.Errorf("90s 间隔的 OnlineThreshold() = %v，期望 %v", got, want)
 	}
 }
+
+// TestDecodeStrict_Net 验证 net 的 JSON 绑定与取值。
+func TestDecodeStrict_Net(t *testing.T) {
+	body := strings.Replace(canonical, `"uptime_s"`,
+		`"net":{"rx":1024.5,"tx":64,"rx_total":123456789,"tx_total":987654321},"uptime_s"`, 1)
+
+	rep := mustDecode(t, body)
+
+	nv, ok := rep.NetValues()
+	if !ok {
+		t.Fatal("带了 net 的载荷，NetValues 应返回 ok=true")
+	}
+	if nv.RxBps != 1024.5 || nv.TxBps != 64 {
+		t.Errorf("速率 = (%v, %v)，期望 (1024.5, 64)", nv.RxBps, nv.TxBps)
+	}
+	// 累计值是 uint64：这个量级超过 float64 的精确整数范围之前都没问题，
+	// 但用整数类型存才不会在几十 TB 之后开始丢低位。
+	if nv.RxTotal != 123456789 || nv.TxTotal != 987654321 {
+		t.Errorf("累计 = (%d, %d)，期望 (123456789, 987654321)", nv.RxTotal, nv.TxTotal)
+	}
+}
+
+// TestValidate_NetOptional 钉住 net 的可缺省性。
+//
+// 这是"升级不用停机"的基础：新 server 必须同时接受老 agent（不带 net）与
+// 新 agent（带 net）。哪天有人把 net 改成必填，这条会红。
+func TestValidate_NetOptional(t *testing.T) {
+	rep := validReport(t)
+	if rep.Net != nil {
+		t.Fatal("canonical 里不该有 net")
+	}
+	if err := rep.Validate(); err != nil {
+		t.Fatalf("不带 net 的载荷必须合法（老 agent），却报错：%v", err)
+	}
+	if _, ok := rep.NetValues(); ok {
+		t.Error("没带 net 时 NetValues 应为 ok=false")
+	}
+}
+
+// TestValidate_NetAllOrNothing 验证 net 要么全给要么不给。
+//
+// 半份数据的危害在于它看起来像"真的"：如果 {"net":{"rx":1}} 被接受，
+// 库里会记下 tx=0，图上就是一条贴着零的线——而真相是"不知道"。
+func TestValidate_NetAllOrNothing(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	u := func(v uint64) *uint64 { return &v }
+	full := func() *protocol.Net {
+		return &protocol.Net{RxBps: f(1), TxBps: f(2), RxTotal: u(3), TxTotal: u(4)}
+	}
+
+	tests := []struct {
+		name string
+		net  *protocol.Net
+		want string // 期望错误里出现的字段名；空表示应通过
+	}{
+		{name: "四个字段齐全就通过", net: full()},
+		{name: "四个字段全为 0 也通过（真的没流量）", net: &protocol.Net{
+			RxBps: f(0), TxBps: f(0), RxTotal: u(0), TxTotal: u(0)}},
+		{name: "缺 rx", net: &protocol.Net{TxBps: f(2), RxTotal: u(3), TxTotal: u(4)}, want: "net.rx"},
+		{name: "缺 tx", net: &protocol.Net{RxBps: f(1), RxTotal: u(3), TxTotal: u(4)}, want: "net.tx"},
+		{name: "缺 rx_total", net: &protocol.Net{RxBps: f(1), TxBps: f(2), TxTotal: u(4)}, want: "net.rx_total"},
+		{name: "缺 tx_total", net: &protocol.Net{RxBps: f(1), TxBps: f(2), RxTotal: u(3)}, want: "net.tx_total"},
+		{name: "速率为负", net: &protocol.Net{
+			RxBps: f(-1), TxBps: f(2), RxTotal: u(3), TxTotal: u(4)}, want: "net.rx"},
+		{name: "速率是 NaN", net: &protocol.Net{
+			RxBps: f(math.NaN()), TxBps: f(2), RxTotal: u(3), TxTotal: u(4)}, want: "net.rx"},
+		{name: "速率是 +Inf", net: &protocol.Net{
+			RxBps: f(1), TxBps: f(math.Inf(1)), RxTotal: u(3), TxTotal: u(4)}, want: "net.tx"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rep := validReport(t)
+			rep.Net = tt.net
+			err := rep.Validate()
+
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("应通过，却报错：%v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("应报错（含 %q），却通过了", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("错误信息 %q 未提及 %q", err.Error(), tt.want)
+			}
+		})
+	}
+}

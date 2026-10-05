@@ -111,6 +111,7 @@ func cycle(ctx context.Context, c *collect.Collector, client *push.Client, node 
 		CPUPct:       metrics.CPUPct,
 		Mem:          metrics.Mem,
 		Disk:         metrics.Disk,
+		Net:          protocol.NewNet(metrics.Net),
 		UptimeS:      metrics.UptimeS,
 		AgentVersion: version,
 	}

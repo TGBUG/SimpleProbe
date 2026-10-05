@@ -25,6 +25,12 @@ var metricSpecs = []metricSpec{
 	{Name: "load1", Expr: "AVG(load1)"},
 	{Name: "load5", Expr: "AVG(load5)"},
 	{Name: "load15", Expr: "AVG(load15)"},
+	// 网络速率（字节/秒）。速率取平均是对的：桶内平均速率 = 这段区间的总字节数
+	// 除以时长，与逐点求平均一致。
+	// 老 agent 没上报的行是 NULL，AVG 会跳过；整桶都没数据时这个点被略过，
+	// 表现为曲线断开而不是掉到 0。
+	{Name: "net_rx", Expr: "AVG(net_rx)"},
+	{Name: "net_tx", Expr: "AVG(net_tx)"},
 }
 
 var metricIndex = func() map[string]string {

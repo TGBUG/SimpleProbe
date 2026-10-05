@@ -4,8 +4,124 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
+
+func TestParseNetDev(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantRx  uint64
+		wantTx  uint64
+		wantErr string
+	}{
+		{
+			name: "多网卡求和、排除 lo",
+			content: netDevHeader +
+				netDevLine("lo", 111, 222) + "\n" +
+				netDevLine("eth0", 1000, 2000) + "\n" +
+				netDevLine("eth1", 30, 40) + "\n",
+			wantRx: 1030, wantTx: 2040,
+		},
+		{
+			// 只有 lo 的容器是真实存在的（--network none / host 网络），
+			// 这不是错误，合计就是 0。
+			name:    "只有 lo 时合计为 0 而不是报错",
+			content: netDevHeader + netDevLine("lo", 111, 222) + "\n",
+			wantRx:  0, wantTx: 0,
+		},
+		{
+			name: "网卡别名与网桥名字里的点和连字符不影响解析",
+			content: netDevHeader +
+				netDevLine("eth0.100", 7, 8) + "\n" +
+				netDevLine("br-abc123", 1, 2) + "\n",
+			wantRx: 8, wantTx: 10,
+		},
+		{
+			name:    "列数不足要报错，而不是把缺的当 0",
+			content: netDevHeader + "eth0: 1 2 3\n",
+			wantErr: "列",
+		},
+		{
+			name:    "只有表头、一块网卡都没有要报错",
+			content: netDevHeader,
+			wantErr: "没有任何网卡",
+		},
+		{
+			name:    "字节数不是数字要报错",
+			content: netDevHeader + "eth0: abc 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+			wantErr: "无法解析",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseNetDev(tt.content)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("期望报错（含 %q），却成功了：%+v", tt.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("错误信息 %q 未提及 %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("解析失败: %v", err)
+			}
+			if got.RxBytes != tt.wantRx || got.TxBytes != tt.wantTx {
+				t.Errorf("合计 = rx %d / tx %d，期望 rx %d / tx %d",
+					got.RxBytes, got.TxBytes, tt.wantRx, tt.wantTx)
+			}
+		})
+	}
+}
+
+func TestNetRate(t *testing.T) {
+	tests := []struct {
+		name           string
+		prev, cur      NetCounters
+		elapsed        time.Duration
+		wantRx, wantTx float64
+	}{
+		{
+			name: "正常差分",
+			prev: NetCounters{1000, 2000}, cur: NetCounters{4000, 8000},
+			elapsed: 30 * time.Second, wantRx: 100, wantTx: 200,
+		},
+		{
+			// 网卡 down/up 会让计数器归零。差值没有意义，夹成 0，
+			// 而不是给一个负数或者一根几十 GB/s 的针。
+			name: "收侧倒退夹成 0，发侧照常",
+			prev: NetCounters{5000, 5000}, cur: NetCounters{100, 6000},
+			elapsed: 30 * time.Second, wantRx: 0, wantTx: 1000.0 / 30,
+		},
+		{
+			name: "两侧都倒退就是 0",
+			prev: NetCounters{5000, 5000}, cur: NetCounters{1, 2},
+			elapsed: 30 * time.Second, wantRx: 0, wantTx: 0,
+		},
+		{
+			name: "零间隔不能算出 NaN/Inf",
+			prev: NetCounters{1, 1}, cur: NetCounters{2, 2},
+			elapsed: 0, wantRx: 0, wantTx: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rx, tx := NetRate(tt.prev, tt.cur, tt.elapsed)
+			if math.Abs(rx-tt.wantRx) > 1e-9 || math.Abs(tx-tt.wantTx) > 1e-9 {
+				t.Errorf("NetRate() = (%v, %v)，期望 (%v, %v)", rx, tx, tt.wantRx, tt.wantTx)
+			}
+			if math.IsNaN(rx) || math.IsInf(rx, 0) || math.IsNaN(tx) || math.IsInf(tx, 0) {
+				t.Errorf("速率不能是 NaN/Inf，得到 (%v, %v)", rx, tx)
+			}
+		})
+	}
+}
 
 func TestParseLoadavg(t *testing.T) {
 	tests := []struct {

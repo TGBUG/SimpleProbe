@@ -38,6 +38,14 @@
   <div class="chart" id="chart-load"></div>
 </div>
 
+<div class="chart-block">
+  <div class="chart-title">网络流量<span class="chart-stat" id="stat-net"></span><span class="legend">
+    <span><i class="swatch-netrx"></i>下行</span>
+    <span><i class="swatch-nettx"></i>上行</span>
+  </span></div>
+  <div class="chart" id="chart-net"></div>
+</div>
+
 <script src="app.js"></script>
 <script>
 "use strict";
@@ -75,7 +83,8 @@ function fmtTime(ts, span) {
  * 一条曲线的点会在数据中断处断开，而不是连成一条直线——
  * “没有数据”和“值一直是这个数”在图上必须看得出来。
  */
-function renderChart(host, seriesList, step, from, to) {
+function renderChart(host, seriesList, step, from, to, fmtY) {
+  fmtY = fmtY || fmtAxis;
   const all = seriesList.reduce(function (acc, s) { return acc.concat(s.points); }, []);
   if (!all.length) {
     host.innerHTML = '<div class="empty">该时间段没有数据</div>';
@@ -105,7 +114,7 @@ function renderChart(host, seriesList, step, from, to) {
     const v = yMin + (yMax - yMin) * (i / 4);
     const yy = Y(v).toFixed(1);
     svg += '<line class="grid" x1="' + PL + '" y1="' + yy + '" x2="' + (W - PR) + '" y2="' + yy + '"/>';
-    svg += '<text class="axis-label" x="' + (PL - 6) + '" y="' + (Number(yy) + 3) + '" text-anchor="end">' + fmtAxis(v) + "</text>";
+    svg += '<text class="axis-label" x="' + (PL - 6) + '" y="' + (Number(yy) + 3) + '" text-anchor="end">' + fmtY(v) + "</text>";
   }
   for (let i = 0; i <= 3; i++) {
     const t = from + (span * i) / 3;
@@ -136,7 +145,15 @@ const METRICS = [
   { metric: "load1", key: "load1", host: "chart-load" },
   { metric: "load5", key: "load5", host: "chart-load" },
   { metric: "load15", key: "load15", host: "chart-load" },
+  { metric: "net_rx", key: "netrx", host: "chart-net" },
+  { metric: "net_tx", key: "nettx", host: "chart-net" },
 ];
+
+// 各图的值量纲不同：CPU/内存是百分数，流量是字节/秒。坐标轴与极值文字要跟着换，
+// 否则流量图会出现 "8388608.00" 这种读不出来的刻度。
+const Y_FORMAT = {
+  "chart-net": function (v) { return Probe.formatBps(v); },
+};
 
 let lastPayload = null;
 
@@ -170,13 +187,15 @@ async function load() {
 
     Object.keys(byHost).forEach(function (host) {
       const g = byHost[host];
-      renderChart(document.getElementById(host), g.series, g.step, g.from, g.to);
+      renderChart(document.getElementById(host), g.series, g.step, g.from, g.to, Y_FORMAT[host]);
     });
 
     const cpu = results[0];
     const total = cpu.points.length;
-    document.getElementById("stat-cpu").textContent = statText(byHost["chart-cpu"].series[0].points, "%");
-    document.getElementById("stat-mem").textContent = statText(byHost["chart-mem"].series[0].points, "%");
+    document.getElementById("stat-cpu").textContent = statText(byHost["chart-cpu"].series[0].points, pctFmt);
+    document.getElementById("stat-mem").textContent = statText(byHost["chart-mem"].series[0].points, pctFmt);
+    // 流量统计用下行那条线做代表，上下行的极值往往不在同一时刻，混在一起没有意义。
+    document.getElementById("stat-net").textContent = statText(byHost["chart-net"].series[0].points, Probe.formatBps);
     document.getElementById("meta").textContent =
       total + " 个数据点 · 每个点 " + fmtStep(cpu.step) + " · " +
       new Date(cpu.from * 1000).toLocaleString() + " 起";
@@ -184,6 +203,7 @@ async function load() {
   } catch (err) {
     document.getElementById("stat-cpu").textContent = "";
     document.getElementById("stat-mem").textContent = "";
+    document.getElementById("stat-net").textContent = "";
     Probe.showBanner("读取曲线失败：" + err.message);
   }
 }
@@ -196,7 +216,9 @@ function fmtStep(sec) {
 }
 
 // 把一段区间的极值与均值写在图题右边——曲线看趋势，数字看具体。
-function statText(points, suffix) {
+// fmt 是格式化函数而不是后缀：流量要按 B/KB/MB 换算，光加单位会得到
+// "8388608.00 B/s" 这种没法读的东西。
+function statText(points, fmt) {
   if (!points || !points.length) return "";
   let min = Infinity, max = -Infinity, sum = 0;
   points.forEach(function (p) {
@@ -205,9 +227,10 @@ function statText(points, suffix) {
     if (v > max) max = v;
     sum += v;
   });
-  return "最小 " + fmtAxis(min) + suffix + " · 平均 " + fmtAxis(sum / points.length) + suffix +
-    " · 最大 " + fmtAxis(max) + suffix;
+  return "最小 " + fmt(min) + " · 平均 " + fmt(sum / points.length) + " · 最大 " + fmt(max);
 }
+
+function pctFmt(v) { return fmtAxis(v) + "%"; }
 
 function renderRanges() {
   const host = document.getElementById("ranges");
@@ -233,7 +256,7 @@ window.addEventListener("resize", function () {
     if (!lastPayload) return;
     Object.keys(lastPayload).forEach(function (host) {
       const g = lastPayload[host];
-      renderChart(document.getElementById(host), g.series, g.step, g.from, g.to);
+      renderChart(document.getElementById(host), g.series, g.step, g.from, g.to, Y_FORMAT[host]);
     });
   }, 150);
 });
