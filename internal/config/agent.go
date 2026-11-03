@@ -40,7 +40,11 @@ type Agent struct {
 	Node     string   `yaml:"node"`
 	Token    string   `yaml:"token"`
 	Interval Duration `yaml:"interval"`
-	// Mounts 是要监控的挂载点，留空则只报根分区。
+	// Mounts 是要监控的挂载点。
+	//
+	// **留空表示自动发现**（读 /proc/mounts 挑出真实存储，见 collect.DiscoverMounts），
+	// 不是"只报根分区"——多盘机器不该被迫手工枚举每一块盘，漏一块就看不见。
+	// 写了就只采集写出来的那些，一个不多一个不少。
 	Mounts []string `yaml:"mounts"`
 }
 

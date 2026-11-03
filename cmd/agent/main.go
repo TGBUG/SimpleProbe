@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,22 +78,48 @@ func run() error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	issues := &issueTracker{}
+
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Info("agent 退出")
 			return nil
 		case <-ticker.C:
-			cycle(ctx, collector, client, cfg.Node, int(interval.Seconds()), logger)
+			cycle(ctx, collector, client, cfg.Node, int(interval.Seconds()), logger, issues)
 		}
 	}
+}
+
+// issueTracker 只在“被跳过的挂载点集合”变化时打一次日志。
+//
+// 一块 U 盘长期不在，每 30 秒刷一行 WARN 会把 journal 淹掉；而一旦它回来了，
+// 又必须留下痕迹——所以按集合去重，而不是按时间。
+type issueTracker struct{ last string }
+
+func (t *issueTracker) report(issues []collect.MountIssue, logger *slog.Logger) {
+	parts := make([]string, 0, len(issues))
+	for _, is := range issues {
+		parts = append(parts, is.Mount+"（"+is.Reason+"）")
+	}
+	sig := strings.Join(parts, "；")
+	if sig == t.last {
+		return
+	}
+	t.last = sig
+	if sig == "" {
+		logger.Info("所有挂载点都恢复正常")
+		return
+	}
+	logger.Warn("有挂载点被跳过，它们不会出现在磁盘数据里",
+		"数量", len(issues), "跳过", sig)
 }
 
 // cycle 走一轮“采集 → 自检 → 上报”。
 //
 // 任何一步失败都只是丢掉这一轮，不重排队列：在线率由 server 侧按接收情况
 // 统计，不需要 agent 补历史（规格 §3 的关键简化）。
-func cycle(ctx context.Context, c *collect.Collector, client *push.Client, node string, intervalS int, logger *slog.Logger) {
+func cycle(ctx context.Context, c *collect.Collector, client *push.Client, node string, intervalS int, logger *slog.Logger, iss *issueTracker) {
 	metrics, err := c.Sample()
 	switch {
 	case errors.Is(err, collect.ErrWarmup):
@@ -102,6 +129,10 @@ func cycle(ctx context.Context, c *collect.Collector, client *push.Client, node 
 		logger.Error("采集失败", "err", err)
 		return
 	}
+
+	// 磁盘是逐个挂载点独立采集的，跳过的那部分必须留下痕迹——
+	// 否则一块盘悄悄消失，面板上看起来一切正常。
+	iss.report(metrics.DiskIssues, logger)
 
 	rep := &protocol.Report{
 		V:            protocol.Version,

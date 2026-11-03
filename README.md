@@ -102,7 +102,6 @@ server: "https://probe.example.com"
 node: "web01"
 token: "同上"
 interval: 30s
-mounts: ["/"]
 EOF
 
 ./bin/server -config nodes.yaml -web ./web    # -web 让它顺便托管页面（开发时方便）
@@ -223,6 +222,7 @@ agent 单周期最多 3 次尝试是 36 次/分钟。阈值一旦低于这个数
 - ✅ v0.4 Release 工作流（三平台静态二进制 + SHA256SUMS）+ 一键安装脚本 + 去掉建账户步骤
 - ✅ v0.5 单目录布局（`--dir`，默认当前目录）+ 运行身份改为目录属主（配置回到 0600）+ `uninstall`
 - ✅ v0.6 网络流量：上下行速率进曲线，开机以来累计只做当前值
+- ✅ v0.7 磁盘：自动发现真实存储；单块盘读不到不再拖垮整轮
 - ⏳ 候选：离线 webhook 告警
 
 `make e2e` 覆盖的验收：真实 `/proc` 数据落库、停掉 agent 后在线率确实下降、

@@ -109,12 +109,35 @@ online = (now - last_seen) < 2.5 × interval_s
 | `load` | float[3] | 1 / 5 / 15 分钟负载，**恒为 3 个元素** |
 | `cpu_pct` | float | `0 ~ 100`（已排除 guest 时间，含 iowait） |
 | `mem.used` / `mem.total` | uint | **字节**；`used = MemTotal - MemAvailable`（刻意不用 MemFree——它不含 cache/buffer，几乎每台机都会显示内存快满） |
-| `disk` | array | **至少 1 个**；每项 `mount` / `used` / `total`（字节） |
+| `disk` | array | **至少 1 个**；每项 `mount` / `used` / `total`（字节）。见下方说明 |
 | `uptime_s` | int | 主机开机时长（秒） |
 | `agent_version` | string | agent 版本 |
 | `net` | object \| null | 网络流量；**`null` 表示这个节点还没上报过流量**（agent 尚未升级） |
 
 前端要算内存百分比请用 `100 * used / total`，不要假设 `total` 是常数或已扣缓存。
+
+### `disk` 字段
+
+```json
+"disk": [
+  { "mount": "/",       "used": 16084709376, "total": 54694076416 },
+  { "mount": "/data",   "used":  2147483648, "total": 107374182400 }
+]
+```
+
+**一台机器可能有多块盘，所以这里是数组**，长度 1 ~ 64。前端要按数组渲染，
+不能只取第一个。
+
+几个口径：
+
+- `total` **一定是正数**。数量为 0 的挂载点（`/proc` 这类伪文件系统）在 agent
+  侧就被滤掉了，不会出现在这里。
+- 列表内容由 agent 决定：默认**自动发现**所有真实存储设备（排除伪/内存文件
+  系统、只读镜像、文件级 bind mount，并按设备去重），也可以由管理员在
+  `agent.yaml` 里写死。
+- **某块盘读不到时它就不在这个数组里**，其它盘照常返回。所以"少了一项"不等于
+  "这台机器出故障"，但值得留意——agent 日志里会有 `有挂载点被跳过` 的告警。
+- 顺序稳定（按挂载点路径排序），但**不要依赖具体顺序**做映射。
 
 ### `net` 字段
 

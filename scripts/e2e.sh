@@ -27,7 +27,9 @@ AGENT2=""
 INST_SRV=""
 INST_AG=""
 LIM_SRV=""
+BAD_AGENT=""
 cleanup() {
+  [[ -n "$BAD_AGENT" ]] && kill "$BAD_AGENT" 2>/dev/null || true
   [[ -n "$LIM_SRV" ]] && kill "$LIM_SRV" 2>/dev/null || true
   [[ -n "$INST_AG" ]] && kill "$INST_AG" 2>/dev/null || true
   [[ -n "$INST_SRV" ]] && kill "$INST_SRV" 2>/dev/null || true
@@ -59,7 +61,6 @@ server: "http://127.0.0.1:$PORT"
 node: "local"
 token: "$TOKEN"
 interval: $INTERVAL
-mounts: ["/"]
 EOF
 
 echo "== 启动 server =="
@@ -101,7 +102,14 @@ assert len(m["load"]) == 3, "负载应有三项"
 assert 0 <= m["cpu_pct"] <= 100, "CPU 使用率应在 [0,100]"
 assert m["mem"]["total"] > 0 and m["mem"]["used"] <= m["mem"]["total"]
 assert m["disk"] and m["disk"][0]["total"] > 0, "磁盘用量应为正"
-assert m["disk"][0]["mount"] == "/"
+assert m["disk"][0]["mount"] == "/", "自动发现的第一个挂载点应是 /（按挂载点排序）"
+# 自动发现不等于“只报根分区”：每个条目都必须是真实存储，且不能有重复。
+mounts = [d["mount"] for d in m["disk"]]
+assert len(mounts) == len(set(mounts)), f"挂载点重复：{mounts}"
+for d in m["disk"]:
+    assert d["total"] > 0, f"{d['mount']} 的总容量为 0，不该被上报"
+assert not any(p.startswith("/proc") or p.startswith("/sys") for p in mounts), \
+    f"伪文件系统不该出现：{mounts}"
 assert n["uptime"]["24h"] == 1, "刚接入且满勤，24h 在线率应为 1"
 PY
 
@@ -145,6 +153,35 @@ assert e["code"] == "unknown_field", e
 # 控制字符不该出现在给对端的描述里。
 assert all(ord(c) >= 0x20 and ord(c) != 0x7f for c in e["message"] + e["field"])
 PY
+
+echo "== 多盘：坏掉的挂载点不该拖垮整轮 =="
+# 修复前的两个真实故障：配置里有一个路径不存在（U 盘拔了/写错），或者有一个
+# 伪文件系统（/proc，total=0），整轮采集就失败，**一条数据都不上报**，
+# 节点直接变离线。现在应逐个跳过、其余照常上报，并留下日志。
+for spec in '["/", "/definitely/not/here"]' '["/", "/proc"]'; do
+  cat >"$WORK/agent-bad.yaml" <<EOF
+server: "http://127.0.0.1:$PORT"
+node: "local"
+token: "$TOKEN"
+interval: $INTERVAL
+mounts: $spec
+EOF
+  before=$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM sample').fetchone()[0])" "$WORK/probe.db")
+  "$WORK/bin/agent" -config "$WORK/agent-bad.yaml" >"$WORK/agent-bad.log" 2>&1 &
+  BAD_AGENT=$!
+  sleep 12
+  kill "$BAD_AGENT" 2>/dev/null || true
+  wait "$BAD_AGENT" 2>/dev/null || true
+  BAD_AGENT=""
+  after=$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM sample').fetchone()[0])" "$WORK/probe.db")
+
+  echo "  mounts=$spec → 新增 $((after - before)) 条上报"
+  [[ $((after - before)) -gt 0 ]] ||
+    { echo "    ✗ 一个坏挂载点就拖垮了整轮：一条都没上报"; cat "$WORK/agent-bad.log"; exit 1; }
+  grep -q '有挂载点被跳过' "$WORK/agent-bad.log" ||
+    { echo "    ✗ 跳过的挂载点没有留下日志（静默降级比报错更糟）"; cat "$WORK/agent-bad.log"; exit 1; }
+  echo "    ✓ 其余挂载点照常上报，日志里有明确告警"
+done
 
 echo "== 历史曲线 =="
 FROM=$(( $(date +%s) - 120 ))

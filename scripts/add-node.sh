@@ -163,7 +163,7 @@ server: "$SERVER_URL"
 node: "$ID"
 token: "$TOKEN"
 interval: $INTERVAL
-mounts: ["/"]
+# mounts 留空 = 自动发现所有真实存储设备；想限定就加：mounts: ["/", "/data"]
 EOF
 chmod 600 "$AGENT_FILE"
 

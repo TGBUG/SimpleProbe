@@ -23,7 +23,17 @@ token: "把 add-node.sh 生成的十六进制串填这里"
 # 调大能省资源，调小会让明细表增长更快（30s × 30 天 = 86,400 行/节点）。
 interval: 30s
 
-# 要监控的挂载点，留空则只报根分区。
-# 刻意不自动枚举 /proc/mounts——那里会有 tmpfs / overlay / squashfs
-# 等一堆没意义的条目。
-mounts: ["/"]
+# 要监控的挂载点。
+#
+# **留空 = 自动发现**：读 /proc/mounts，挑出真实的存储设备，排除
+#   - 内核伪文件系统（proc / sysfs / cgroup …）
+#   - 内存文件系统（tmpfs / ramfs / devtmpfs）
+#   - 只读镜像（squashfs / iso9660）
+#   - 文件级 bind mount（容器里的 /etc/hosts、/etc/resolv.conf 这类）
+# 同一块盘被 bind mount 到多处时只报一次。
+#
+# 只有想**限定**范围时才需要写，例如只看根分区：
+#   mounts: ["/"]
+# 写死之后就不会自动发现新挂上去的盘了。
+#
+# mounts: ["/", "/data"]

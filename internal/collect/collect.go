@@ -15,9 +15,19 @@ type Metrics struct {
 	CPUPct float64
 	Mem    protocol.Mem
 	Disk   []protocol.Disk
+	// DiskIssues 记录本轮被跳过的挂载点（不存在、没权限、不是存储）。
+	// 它们不进上报载荷——协议要求 disk[].total 不为 0——但调用方应当写日志，
+	// 否则一块盘悄悄消失会毫无痕迹。
+	DiskIssues []MountIssue
 	// Net 同时带速率（差分算得）与累计（网卡计数器原值）。
 	Net     protocol.NetValues
 	UptimeS int64
+}
+
+// MountIssue 是一个被跳过的挂载点及原因。
+type MountIssue struct {
+	Mount  string
+	Reason string
 }
 
 // Collector 按固定间隔采集本机指标。
@@ -25,11 +35,13 @@ type Metrics struct {
 // 它不是并发安全的：应由单个 goroutine 顺序驱动。
 type Collector struct {
 	interval time.Duration
-	mounts   []string
+	// mounts 为空表示自动发现（见 DiscoverMounts）。
+	mounts []string
 
-	// 以下三个字段在测试中被替换，生产路径用真实实现。
+	// 以下四个字段在测试中被替换，生产路径用真实实现。
 	readFile func(string) ([]byte, error)
 	statfs   func(string) (usage, error)
+	isDir    func(string) bool
 	now      func() time.Time
 
 	prevStat *CPUStat
@@ -37,21 +49,22 @@ type Collector struct {
 	prevAt   time.Time
 }
 
-// New 创建采集器。mounts 为空时默认只采集根分区。
+// New 创建采集器。
+//
+// mounts 为空表示**自动发现**所有真实存储设备。显式给了就只采集给的那些，
+// 一个不多一个不少——想要“只看根分区”就写 ["/"]。
 func New(interval time.Duration, mounts []string) *Collector {
-	if len(mounts) == 0 {
-		mounts = []string{"/"}
-	}
 	return &Collector{
 		interval: interval,
-		mounts:   mounts,
+		mounts:   append([]string(nil), mounts...),
 		readFile: os.ReadFile,
 		statfs:   statfsUsage,
+		isDir:    func(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() },
 		now:      time.Now,
 	}
 }
 
-// Mounts 返回正在采集的挂载点列表（只读）。
+// Mounts 返回配置的挂载点列表。**空切片表示自动发现**，不是“什么都没配”。
 func (c *Collector) Mounts() []string {
 	return append([]string(nil), c.mounts...)
 }
@@ -105,7 +118,7 @@ func (c *Collector) Sample() (Metrics, error) {
 	if err != nil {
 		return Metrics{}, err
 	}
-	disk, err := c.readDisk()
+	disk, diskIssues, err := c.readDisk()
 	if err != nil {
 		return Metrics{}, err
 	}
@@ -115,10 +128,11 @@ func (c *Collector) Sample() (Metrics, error) {
 	}
 
 	return Metrics{
-		Load:   load,
-		CPUPct: cpuPct,
-		Mem:    mem,
-		Disk:   disk,
+		Load:       load,
+		CPUPct:     cpuPct,
+		Mem:        mem,
+		Disk:       disk,
+		DiskIssues: diskIssues,
 		Net: protocol.NetValues{
 			RxBps: rxBps, TxBps: txBps,
 			// 累计值直接取本次读到的计数器——它是“开机以来”，不是差值。
@@ -168,16 +182,72 @@ func (c *Collector) readUptime() (int64, error) {
 	return ParseUptime(string(b))
 }
 
-func (c *Collector) readDisk() ([]protocol.Disk, error) {
-	out := make([]protocol.Disk, 0, len(c.mounts))
-	for _, mount := range c.mounts {
+// readDisk 采集挂载点用量。
+//
+// 与 CPU / 内存那种“一个整体指标”不同，磁盘是一组**互相独立**的设备：
+// 一块盘读不到，不该把其它盘和整台机器的监控一起拖下水。所以这里逐个跳过
+// 失败的挂载点，把原因交回调用方记日志。
+//
+// 三种情况会跳过：
+//   - statfs 失败（路径不存在：U 盘拔了、手滑写错、NFS 掉线）；
+//   - total 为 0（/proc、/sys 这类伪文件系统，没有容量概念）；
+//   - 全部失败时——那说明配置整个不对，整轮作废（协议也要求至少一个挂载点）。
+func (c *Collector) readDisk() ([]protocol.Disk, []MountIssue, error) {
+	targets := c.mounts
+	auto := len(targets) == 0
+	if auto {
+		targets = c.discoverMounts()
+	}
+
+	out := make([]protocol.Disk, 0, len(targets))
+	var issues []MountIssue
+
+	for _, mount := range targets {
 		u, err := c.statfs(mount)
 		if err != nil {
-			return nil, fmt.Errorf("读取挂载点 %s 的用量: %w", mount, err)
+			issues = append(issues, MountIssue{Mount: mount, Reason: err.Error()})
+			continue
+		}
+		if u.Total == 0 {
+			issues = append(issues, MountIssue{Mount: mount, Reason: "总容量为 0，不是存储设备"})
+			continue
 		}
 		out = append(out, protocol.Disk{Mount: mount, Used: u.Used, Total: u.Total})
 	}
-	return out, nil
+
+	if len(out) == 0 {
+		how := "配置"
+		if auto {
+			how = "自动发现"
+		}
+		return nil, issues, fmt.Errorf("磁盘：%s的 %d 个挂载点全部不可用", how, len(targets))
+	}
+	return out, issues, nil
+}
+
+// discoverMounts 从 /proc/mounts 找出真实存储。
+//
+// 自动发现失败时退回根分区：磁盘发现不该成为整轮采集的绊脚石——读不到
+// /proc/mounts 的机器极少，但真遇到时，「只报根分区」远好过「什么都报不了」。
+func (c *Collector) discoverMounts() []string {
+	b, err := c.readFile("/proc/mounts")
+	if err != nil {
+		return []string{"/"}
+	}
+	found := DiscoverMounts(string(b), c.isDir)
+	if len(found) == 0 {
+		return []string{"/"}
+	}
+
+	out := make([]string, 0, len(found))
+	for _, m := range found {
+		out = append(out, m.MountPoint)
+		// 协议对挂载点数量有上限，超了就按排序截断（DiscoverMounts 已排好序）。
+		if len(out) >= protocol.MaxDiskEntries {
+			break
+		}
+	}
+	return out
 }
 
 type usage struct{ Used, Total uint64 }

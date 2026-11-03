@@ -44,7 +44,8 @@ SERVER_URL=""
 NODE=""
 TOKEN=""
 INTERVAL="30s"
-MOUNTS='["/"]'
+# 留空 = 不写 mounts 这一行，agent 自动发现所有真实存储设备。
+MOUNTS=""
 
 log() { printf '%s\n' "$*"; }
 step() { printf '\n== %s ==\n' "$*"; }
@@ -93,7 +94,8 @@ agent 选项：
   --node <id>        节点 id，必填，必须与 server 端配置一致
   --token <token>    server 端为该节点配置的 token，必填
   --interval <时长>  上报间隔，默认 30s（合法范围 5s ~ 1h）
-  --mounts <JSON>    监控的挂载点，默认 ["/"]
+  --mounts <JSON>    只监控指定挂载点，例如 '["/","/data"]'；
+                     不写 = 自动发现所有真实存储设备
 
 uninstall：
   停掉并删除对应的 systemd 单元，**不删任何数据或配置文件**。
@@ -388,13 +390,20 @@ db: "$DIR/data/probe.db"
 nodes:
 EOF
 else
+  # mounts 不写就是自动发现——多盘机器不需要手工枚举每一块盘。
+  mounts_line=""
+  if [[ -n "$MOUNTS" ]]; then
+    mounts_line="mounts: $MOUNTS"
+  fi
   write_conf <<EOF
 # 由 install.sh 生成。
 server: "$SERVER_URL"
 node: "$NODE"
 token: "$TOKEN"
 interval: $INTERVAL
-mounts: $MOUNTS
+# mounts 留空 = 自动发现所有真实存储设备（排除 tmpfs / proc 这类）。
+# 想只盯指定路径就写死，例如：mounts: ["/", "/data"]
+$mounts_line
 EOF
 fi
 

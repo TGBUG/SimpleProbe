@@ -215,7 +215,11 @@ func TestCollector_ReadFailures(t *testing.T) {
 	}
 }
 
-func TestCollector_StatfsFailureFailsWholeRound(t *testing.T) {
+// TestCollector_AllMountsFailFailsRound 说的是“**全部**读不到才作废”。
+//
+// 只坏一块盘的情况见 TestCollector_OneBadMountDoesNotKillTheRound——
+// 两件事必须分开，否则一块 U 盘掉了会让整台机器失联。
+func TestCollector_AllMountsFailFailsRound(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c, files := newTestCollector(t, &now)
 
@@ -227,13 +231,105 @@ func TestCollector_StatfsFailureFailsWholeRound(t *testing.T) {
 	c.statfs = func(string) (usage, error) { return usage{}, errors.New("statfs 炸了") }
 
 	if _, err := c.Sample(); err == nil {
-		t.Fatal("挂载点读不到时应整轮失败，而不是上报半真半假的数据")
+		t.Fatal("所有挂载点都读不到时应整轮失败——协议要求至少一个挂载点")
 	}
 }
 
-func TestNew_DefaultsToRootMount(t *testing.T) {
+// TestCollector_OneBadMountDoesNotKillTheRound 盯的是多盘场景里最要命的那种：
+// 一块盘没了（U 盘拔了、网络盘掉线、路径写错），**其它盘和整台机器的监控**
+// 不该跟着一起失联。
+func TestCollector_OneBadMountDoesNotKillTheRound(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, files := newTestCollector(t, &now) // 配置是 ["/", "/data"]
+
+	if _, err := c.Sample(); !errors.Is(err, ErrWarmup) {
+		t.Fatalf("首次采样应返回 ErrWarmup，得到 %v", err)
+	}
+	now = now.Add(30 * time.Second)
+	files["/proc/stat"] = statLine(200, 0, 200, 1600, 0, 0, 0, 0)
+	c.statfs = func(mount string) (usage, error) {
+		if mount == "/data" {
+			return usage{}, errors.New("no such file or directory")
+		}
+		return usage{Used: 50, Total: 100}, nil
+	}
+
+	m, err := c.Sample()
+	if err != nil {
+		t.Fatalf("一块盘失败不该让整轮失败，得到 %v", err)
+	}
+	if len(m.Disk) != 1 || m.Disk[0].Mount != "/" {
+		t.Errorf("应只报出可用的那块盘，得到 %+v", m.Disk)
+	}
+	if len(m.DiskIssues) != 1 || m.DiskIssues[0].Mount != "/data" {
+		t.Errorf("跳过的盘应记进 DiskIssues 供日志使用，得到 %+v", m.DiskIssues)
+	}
+}
+
+// TestCollector_SkipsZeroSizeMount 盯的是 /proc、/sys 这类伪文件系统。
+//
+// 它们 statfs 成功但 total=0。协议层要求 disk[].total 不为 0（那是对的，
+// 0 容量说明数据本身有问题），所以采集层必须先滤掉，否则一条坏数据会让
+// 整个载荷被拒——节点直接离线。
+func TestCollector_SkipsZeroSizeMount(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, _ := newTestCollector(t, &now)
+	c.mounts = []string{"/", "/proc"}
+	c.statfs = func(mount string) (usage, error) {
+		if mount == "/proc" {
+			return usage{Used: 0, Total: 0}, nil
+		}
+		return usage{Used: 50, Total: 100}, nil
+	}
+
+	disk, issues, err := c.readDisk()
+	if err != nil {
+		t.Fatalf("伪文件系统应被跳过而不是报错，得到 %v", err)
+	}
+	if len(disk) != 1 || disk[0].Mount != "/" {
+		t.Errorf("应只保留真正的存储，得到 %+v", disk)
+	}
+	if len(issues) != 1 || issues[0].Mount != "/proc" {
+		t.Errorf("跳过的 /proc 应记进 issues，得到 %+v", issues)
+	}
+}
+
+// TestNew_EmptyMountsMeansAutoDiscover 钉住“空 = 自动发现”这个语义。
+//
+// 曾经空表示“只报根分区”，那让多盘机器必须手工枚举每一块盘，漏一块就看不见。
+func TestNew_EmptyMountsMeansAutoDiscover(t *testing.T) {
 	c := New(30*time.Second, nil)
-	if len(c.mounts) != 1 || c.mounts[0] != "/" {
-		t.Errorf("默认挂载点 = %v，期望 [\"/\"]", c.mounts)
+	if len(c.Mounts()) != 0 {
+		t.Errorf("mounts 留空应表示自动发现，Mounts() = %v", c.Mounts())
+	}
+}
+
+// TestCollector_AutoDiscoverUsesProcMounts 验证自动发现真的走 /proc/mounts，
+// 并且会排除伪文件系统、按设备去重。
+func TestCollector_AutoDiscoverUsesProcMounts(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, files := newTestCollector(t, &now)
+	c.mounts = nil // 自动发现
+	// 测试里的路径是编的，不真的去 stat：一律当作目录。
+	c.isDir = func(string) bool { return true }
+	files["/proc/mounts"] = strings.Join([]string{
+		"/dev/sda1 / ext4 rw 0 0",
+		"proc /proc proc rw 0 0",
+		"/dev/sdb1 /data xfs rw 0 0",
+		"/dev/sdb1 /data/backup xfs rw 0 0", // bind mount，应被去重
+		"tmpfs /run tmpfs rw 0 0",
+	}, "\n")
+
+	disk, _, err := c.readDisk()
+	if err != nil {
+		t.Fatalf("自动发现失败: %v", err)
+	}
+	got := make([]string, 0, len(disk))
+	for _, d := range disk {
+		got = append(got, d.Mount)
+	}
+	want := []string{"/", "/data"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("自动发现的挂载点 = %v，期望 %v（排除 proc/tmpfs，并按设备去重）", got, want)
 	}
 }
